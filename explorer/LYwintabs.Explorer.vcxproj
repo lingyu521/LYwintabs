@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{30B1F4E8-B605-4E59-9DA6-62C0CFB032FB}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries Condition="'$(Configuration)' == 'Debug'">true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)..\out\explorer\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)..\out\obj\explorer\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <ConformanceMode>true</ConformanceMode>
+      <RuntimeLibrary Condition="'$(Configuration)' == 'Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)' == 'Release'">MultiThreaded</RuntimeLibrary>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>WINVER=0x0A00;_WIN32_WINNT=0x0A00;WIN32_LEAN_AND_MEAN;NOMINMAX;STRICT;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <ModuleDefinitionFile>ExplorerExtension.def</ModuleDefinitionFile>
+      <AdditionalDependencies>advapi32.lib;comctl32.lib;dwmapi.lib;gdiplus.lib;ole32.lib;oleaut32.lib;runtimeobject.lib;shell32.lib;uuid.lib;uxtheme.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="..\app\Favorites.cpp" />
+    <ClCompile Include="AddressBookmarkButton.cpp" />
+    <ClCompile Include="BookmarkManager.cpp" />
+    <ClCompile Include="ExplorerExtension.cpp" />
+    <ClCompile Include="ExplorerIcons.cpp" />
+    <ClCompile Include="FavoritesBar.cpp" />
+    <ClCompile Include="FolderTabs.cpp" />
+    <ClCompile Include="WindowsTheme.cpp" />
+    <ClInclude Include="ExplorerExtension.h" />
+    <ClInclude Include="ExplorerIcons.h" />
+    <ClInclude Include="AddressBookmarkButton.h" />
+    <ClInclude Include="ExplorerPreferences.h" />
+    <ClInclude Include="BookmarkManager.h" />
+    <ClInclude Include="FolderTabs.h" />
+    <ClInclude Include="WindowsTheme.h" />
+    <None Include="ExplorerExtension.def" />
+    <ResourceCompile Include="..\app\LYwintabs.rc" />
+    <Image Include="..\app\LYwintabs.ico" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

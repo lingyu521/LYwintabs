@@ -1,0 +1,10 @@
+/.vs/
+/out/
+/analysis/
+/tools/
+/docs/qa/
+/docs/LYwintabs 首版开发策划.md
+/app/*.user
+/explorer/*.user
+/transfer/bin/
+/transfer/obj/

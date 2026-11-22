@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.0.0.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "LYwintabs.Explorer", "explorer\LYwintabs.Explorer.vcxproj", "{30B1F4E8-B605-4E59-9DA6-62C0CFB032FB}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "LYwintabs.Launcher", "explorer\LYwintabs.Launcher.vcxproj", "{F645BAD3-AC4A-415F-B28C-B16A3F1C8AFC}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{30B1F4E8-B605-4E59-9DA6-62C0CFB032FB}.Debug|x64.ActiveCfg = Debug|x64
+		{30B1F4E8-B605-4E59-9DA6-62C0CFB032FB}.Debug|x64.Build.0 = Debug|x64
+		{30B1F4E8-B605-4E59-9DA6-62C0CFB032FB}.Release|x64.ActiveCfg = Release|x64
+		{30B1F4E8-B605-4E59-9DA6-62C0CFB032FB}.Release|x64.Build.0 = Release|x64
+		{F645BAD3-AC4A-415F-B28C-B16A3F1C8AFC}.Debug|x64.ActiveCfg = Debug|x64
+		{F645BAD3-AC4A-415F-B28C-B16A3F1C8AFC}.Debug|x64.Build.0 = Debug|x64
+		{F645BAD3-AC4A-415F-B28C-B16A3F1C8AFC}.Release|x64.ActiveCfg = Release|x64
+		{F645BAD3-AC4A-415F-B28C-B16A3F1C8AFC}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+EndGlobal

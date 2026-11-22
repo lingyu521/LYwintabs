@@ -1,0 +1,3 @@
+#include "../app/Resource.h"
+
+IDI_LYWINTABS ICON "../app/LYwintabs.ico"
