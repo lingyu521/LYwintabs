@@ -1,4 +1,5 @@
 #include "ExplorerExtension.h"
+#include "ExplorerLanguage.h"
 
 #include <shellapi.h>
 #include <shlobj.h>
@@ -13,19 +14,19 @@
 namespace {
 
 std::atomic<long> moduleReferences = 0;
-constexpr wchar_t Title[] = L"LYwintabs 收藏栏";
-constexpr wchar_t Help[] = L"显示或隐藏当前资源管理器窗口的 LYwintabs 横向收藏栏";
+const wchar_t* Title() noexcept { return ExplorerText(L"LYwintabs 收藏栏"); }
+const wchar_t* Help() noexcept { return ExplorerText(L"显示或隐藏当前资源管理器窗口的 LYwintabs 横向收藏栏"); }
 constexpr wchar_t Verb[] = L"LYwintabs.FavoritesBar";
 
 using Microsoft::WRL::ComPtr;
 
-template<size_t Length>
-HRESULT CopyText(const wchar_t (&text)[Length], PWSTR* output)
+HRESULT CopyText(const wchar_t* text, PWSTR* output)
 {
     if (!output) return E_POINTER;
-    *output = static_cast<PWSTR>(CoTaskMemAlloc(sizeof(text)));
+    const size_t bytes = (wcslen(text) + 1) * sizeof(wchar_t);
+    *output = static_cast<PWSTR>(CoTaskMemAlloc(bytes));
     if (!*output) return E_OUTOFMEMORY;
-    std::memcpy(*output, text, sizeof(text));
+    std::memcpy(*output, text, bytes);
     return S_OK;
 }
 
@@ -57,7 +58,7 @@ public:
     IFACEMETHODIMP QueryContextMenu(HMENU menu, UINT index, UINT firstId, UINT lastId, UINT flags) override
     {
         if ((flags & CMF_DEFAULTONLY) || firstId > lastId) return S_OK;
-        if (!InsertMenuW(menu, index, MF_BYPOSITION | MF_STRING, firstId, Title)) return E_FAIL;
+        if (!InsertMenuW(menu, index, MF_BYPOSITION | MF_STRING, firstId, Title())) return E_FAIL;
         return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 1);
     }
 
@@ -87,7 +88,7 @@ public:
         if (type == GCS_VALIDATEA || type == GCS_VALIDATEW) return S_OK;
         if (type == GCS_VERBW) return StringCchCopyW(reinterpret_cast<wchar_t*>(text), capacity, Verb);
         if (type == GCS_VERBA) return StringCchCopyA(text, capacity, "LYwintabs.FavoritesBar");
-        if (type == GCS_HELPTEXTW) return StringCchCopyW(reinterpret_cast<wchar_t*>(text), capacity, Help);
+        if (type == GCS_HELPTEXTW) return StringCchCopyW(reinterpret_cast<wchar_t*>(text), capacity, Help());
         return E_NOTIMPL;
     }
 
@@ -104,8 +105,8 @@ public:
         return site_ ? site_->QueryInterface(iid, result) : E_FAIL;
     }
 
-    IFACEMETHODIMP GetTitle(IShellItemArray*, PWSTR* title) override { return CopyText(Title, title); }
-    IFACEMETHODIMP GetToolTip(IShellItemArray*, PWSTR* tip) override { return CopyText(Help, tip); }
+    IFACEMETHODIMP GetTitle(IShellItemArray*, PWSTR* title) override { return CopyText(Title(), title); }
+    IFACEMETHODIMP GetToolTip(IShellItemArray*, PWSTR* tip) override { return CopyText(Help(), tip); }
     IFACEMETHODIMP GetIcon(IShellItemArray*, PWSTR* icon) override
     {
         if (!icon) return E_POINTER;

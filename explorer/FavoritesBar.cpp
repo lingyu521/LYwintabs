@@ -1,4 +1,5 @@
 #include "ExplorerExtension.h"
+#include "ExplorerLanguage.h"
 #include "ExplorerIcons.h"
 #include "ExplorerPreferences.h"
 #include "AddressBookmarkButton.h"
@@ -69,6 +70,7 @@ struct ExplorerSettings {
     const Favorites* store;
     bool offerBookmarkAdd;
     bool syncWindowsDark;
+    UiLanguage language;
     bool bookmarksChanged = false;
 };
 
@@ -515,7 +517,7 @@ void AppendBookmarkMenu(HMENU menu, const BookmarkChildren& children, std::wstri
             }
         }
     }
-    if (GetMenuItemCount(menu) == 0) AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"（空文件夹）");
+    if (GetMenuItemCount(menu) == 0) AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, ExplorerText(L"（空文件夹）"));
 }
 
 bool ContainsMenu(HMENU root, HMENU candidate)
@@ -534,7 +536,7 @@ HRESULT CALLBACK AboutNotification(HWND dialog, UINT notification, WPARAM, LPARA
     if (notification == TDN_HYPERLINK_CLICKED && detail &&
         !lstrcmpW(reinterpret_cast<const wchar_t*>(detail), authorEmail)) {
         if (reinterpret_cast<INT_PTR>(ShellExecuteW(dialog, L"open", authorEmail, nullptr, nullptr, SW_SHOWNORMAL)) <= 32) {
-            MessageBoxW(dialog, L"无法打开默认邮件程序。", L"关于 LYwintabs", MB_ICONWARNING);
+            MessageBoxW(dialog, ExplorerText(L"无法打开默认邮件程序。"), ExplorerText(L"关于 LYwintabs"), MB_ICONWARNING);
         }
     }
     return S_OK;
@@ -544,8 +546,11 @@ void ShowAbout(HWND owner)
 {
     wchar_t title[96]{};
     swprintf_s(title, L"LYwintabs %ls", ExplorerVersion);
-    constexpr wchar_t description[] = L"Windows 文件资源管理器插件\n"
-        L"Windows 10 标签与书签栏，Windows 11 横向书签栏";
+    const UiLanguage language = ReadUiLanguage();
+    const auto description = ExplorerText(
+        L"Windows 文件资源管理器插件\nWindows 10 标签与书签栏，Windows 11 横向书签栏", language);
+    const bool english = language == UiLanguage::English;
+    const wchar_t* author = english ? L"\n\nAuthor  Lingyu Wang (王凌宇)\nEmail  " : L"\n\n作者  王凌宇\n邮箱  ";
     TASKDIALOGCONFIG dialog{sizeof(dialog)};
     dialog.hwndParent = owner;
     dialog.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
@@ -558,10 +563,10 @@ void ShowAbout(HWND owner)
         }
     }
     dialog.dwCommonButtons = TDCBF_OK_BUTTON;
-    dialog.pszWindowTitle = L"关于 LYwintabs";
+    dialog.pszWindowTitle = ExplorerText(L"关于 LYwintabs");
     dialog.pszMainInstruction = title;
-    const auto content = std::wstring(description) + L"\n\n作者  王凌宇\n"
-        L"邮箱  <a href=\"mailto:270350257@qq.com\">270350257@qq.com</a>";
+    const auto content = std::wstring(description) + author +
+        L"<a href=\"mailto:270350257@qq.com\">270350257@qq.com</a>";
     dialog.pszContent = content.c_str();
     dialog.pfCallback = AboutNotification;
     if (const HMODULE controls = GetModuleHandleW(L"comctl32.dll")) {
@@ -570,7 +575,7 @@ void ShowAbout(HWND owner)
         if (!entry) entry = GetProcAddress(controls, MAKEINTRESOURCEA(345));
         if (entry && SUCCEEDED(std::bit_cast<decltype(&TaskDialogIndirect)>(entry)(&dialog, nullptr, nullptr, nullptr))) return;
     }
-    const auto text = std::wstring(title) + L"\n\n" + description + L"\n\n作者  王凌宇\n邮箱  270350257@qq.com";
+    const auto text = std::wstring(title) + L"\n\n" + description + author + L"270350257@qq.com";
     MessageBoxW(owner, text.c_str(), dialog.pszWindowTitle, MB_OK | MB_ICONINFORMATION);
 }
 
@@ -579,14 +584,19 @@ INT_PTR CALLBACK AppearanceDialog(HWND dialog, UINT message, WPARAM wParam, LPAR
     if (message == WM_INITDIALOG) {
         SetWindowLongPtrW(dialog, DWLP_USER, lParam);
         const auto& settings = *reinterpret_cast<const ExplorerSettings*>(lParam);
+        LocalizeExplorerDialog(dialog, settings.language);
+        const HWND language = GetDlgItem(dialog, IDC_UI_LANGUAGE);
+        ComboBox_AddString(language, L"简体中文");
+        ComboBox_AddString(language, L"English");
+        ComboBox_SetCurSel(language, static_cast<int>(settings.language));
         const HWND theme = GetDlgItem(dialog, IDC_EXPLORER_THEME);
-        ComboBox_AddString(theme, L"跟随 Windows");
-        ComboBox_AddString(theme, L"深色（同步 Windows）");
+        ComboBox_AddString(theme, ExplorerText(L"跟随 Windows"));
+        ComboBox_AddString(theme, ExplorerText(L"深色（同步 Windows）"));
         ComboBox_SetCurSel(theme, settings.syncWindowsDark ? 1 : 0);
         for (const int control : {IDC_TAB_DENSITY, IDC_FAVORITES_DENSITY}) {
             const HWND combo = GetDlgItem(dialog, control);
-            ComboBox_AddString(combo, L"紧凑");
-            ComboBox_AddString(combo, L"加高");
+            ComboBox_AddString(combo, ExplorerText(L"紧凑"));
+            ComboBox_AddString(combo, ExplorerText(L"加高"));
             const DWORD compact = control == IDC_TAB_DENSITY ? CompactTabs : CompactFavorites;
             ComboBox_SetCurSel(combo, (settings.appearance & compact) ? 0 : 1);
         }
@@ -624,6 +634,8 @@ INT_PTR CALLBACK AppearanceDialog(HWND dialog, UINT message, WPARAM wParam, LPAR
         return TRUE;
     }
     if (LOWORD(wParam) != IDOK) return FALSE;
+    const int language = ComboBox_GetCurSel(GetDlgItem(dialog, IDC_UI_LANGUAGE));
+    if (language == 0 || language == 1) settings.language = static_cast<UiLanguage>(language);
     const int theme = ComboBox_GetCurSel(GetDlgItem(dialog, IDC_EXPLORER_THEME));
     if (theme != CB_ERR) settings.syncWindowsDark = theme == 1;
     settings.appearance &= ~(CompactFavorites | HideBookmarks);
@@ -645,6 +657,7 @@ struct SettingsChanges {
     DWORD appearance;
     bool colorsChanged;
     bool bookmarksChanged;
+    bool languageChanged = false;
 };
 
 SettingsChanges ShowSettingsDialog(HMODULE dll, HWND owner, const Favorites& store, DWORD appearance,
@@ -655,32 +668,38 @@ SettingsChanges ShowSettingsDialog(HMODULE dll, HWND owner, const Favorites& sto
     const LSTATUS read = ReadStartupCommand(previousCommand);
     const bool startup = !command.empty() && read == ERROR_SUCCESS && lstrcmpiW(command.c_str(), previousCommand) == 0;
     const bool syncWindowsDark = HasWindowsThemeRestorePoint();
+    const UiLanguage language = ReadUiLanguage();
     ExplorerSettings selected{appearance, startup, !command.empty() && (startup || read == ERROR_FILE_NOT_FOUND),
-        useTabs, &store, offerBookmarkAdd, syncWindowsDark};
+        useTabs, &store, offerBookmarkAdd, syncWindowsDark, language};
     const auto result = DialogBoxParamW(dll, MAKEINTRESOURCEW(IDD_EXPLORER_SETTINGS), owner, AppearanceDialog,
         reinterpret_cast<LPARAM>(&selected));
     SettingsChanges changes{result, appearance, false, selected.bookmarksChanged};
     if (result != IDOK) return changes;
 
+    if (selected.language != language) {
+        changes.languageChanged = SaveUiLanguage(selected.language);
+        if (!changes.languageChanged)
+            MessageBoxW(owner, ExplorerText(L"无法保存界面语言。"), L"LYwintabs", MB_ICONWARNING);
+    }
     if (selected.syncWindowsDark != syncWindowsDark) {
         const auto error = SetWindowsDarkMode(selected.syncWindowsDark);
         changes.colorsChanged = true;
         if (error != ERROR_SUCCESS) {
-            const auto message = std::wstring(L"无法更新 Windows 配色。错误代码 ") + std::to_wstring(error) + L"。";
+            const auto message = std::wstring(ExplorerText(L"无法更新 Windows 配色。错误代码 ")) + std::to_wstring(error) + L"。";
             MessageBoxW(owner, message.c_str(), L"LYwintabs", MB_ICONWARNING);
         }
     }
     if (selected.canSetStartup && selected.startup != startup && !SaveStartupSetting(command, selected.startup)) {
-        MessageBoxW(owner, L"无法保存开机启动设置。", L"LYwintabs", MB_ICONWARNING);
+        MessageBoxW(owner, ExplorerText(L"无法保存开机启动设置。"), L"LYwintabs", MB_ICONWARNING);
     }
     if (selected.appearance != appearance) {
         if (RegSetKeyValueW(HKEY_CURRENT_USER, AppearanceKey, AppearanceValue, REG_DWORD,
                 &selected.appearance, sizeof(selected.appearance)) == ERROR_SUCCESS)
             changes.appearance = selected.appearance;
         else
-            MessageBoxW(owner, L"无法保存设置。", L"LYwintabs", MB_ICONWARNING);
+            MessageBoxW(owner, ExplorerText(L"无法保存设置。"), L"LYwintabs", MB_ICONWARNING);
     }
-    if (changes.colorsChanged || changes.appearance != appearance)
+    if (changes.colorsChanged || changes.appearance != appearance || changes.languageChanged)
         BroadcastToOtherBars(owner, AppearanceChangedMessage());
     return changes;
 }
@@ -726,23 +745,24 @@ public:
         if (!SetPropW(root_, BarProperty, bar_) || !SetTimer(bar_, RefreshTimer, 125, nullptr)) return E_FAIL;
         const bool watchFrame = SetWindowSubclass(root_, FrameProc, 1, reinterpret_cast<DWORD_PTR>(this)) != FALSE;
         if (useTabs_ && !CreateTabStrip(watchFrame)) return E_FAIL;
-        if (!useTabs_) settings_ = CreateButton(SettingsCommand, L"设置");
+        if (!useTabs_) settings_ = CreateButton(SettingsCommand, ExplorerText(L"设置"));
         ApplyAppearance(ReadAppearance());
-        transfer_ = CreateButton(TransferCommand, L"局域网互传");
-        more_ = CreateButton(MoreCommand, useTabs_ ? L"»" : L"更多…");
+        transfer_ = CreateButton(TransferCommand, ExplorerText(L"局域网互传"));
+        more_ = CreateButton(MoreCommand, useTabs_ ? L"»" : ExplorerText(L"更多…"));
         if (!settings_ || !more_ || !transfer_) return E_FAIL;
-        if (const HWND tooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
-            0, 0, 0, 0, bar_, nullptr, nullptr, nullptr)) {
+        tooltip_ = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
+            0, 0, 0, 0, bar_, nullptr, nullptr, nullptr);
+        if (tooltip_) {
             TOOLINFOW tool{sizeof(tool)};
             tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
             tool.hwnd = bar_;
             tool.uId = reinterpret_cast<UINT_PTR>(transfer_);
-            tool.lpszText = const_cast<wchar_t*>(L"局域网互传");
-            SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+            tool.lpszText = const_cast<wchar_t*>(ExplorerText(L"局域网互传"));
+            SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
             if (!useTabs_) {
                 tool.uId = reinterpret_cast<UINT_PTR>(settings_);
-                tool.lpszText = const_cast<wchar_t*>(L"设置");
-                SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+                tool.lpszText = const_cast<wchar_t*>(ExplorerText(L"设置"));
+                SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
             }
         }
         Refresh();
@@ -771,7 +791,7 @@ private:
             0, 0, 0, 0, bar_, nullptr, nullptr, nullptr);
         if (!tabHost_ || !SetWindowSubclass(tabHost_, TabsProc, 1, reinterpret_cast<DWORD_PTR>(this)) ||
             !tabs_.Initialize(tabHost_, root_, dark_)) return false;
-        settings_ = CreateWindowExW(0, L"Button", L"设置", WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+        settings_ = CreateWindowExW(0, L"Button", ExplorerText(L"设置"), WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
             0, 0, 0, 0, tabHost_, nullptr, nullptr, nullptr);
         if (!settings_) return false;
         if (!watchFrame) return true;
@@ -846,6 +866,31 @@ private:
         buttonsDirty_ = true;
     }
 
+    void ApplyLanguage()
+    {
+        const UiLanguage language = ReadUiLanguage();
+        const auto settings = ExplorerText(L"设置", language);
+        const auto transfer = ExplorerText(L"局域网互传", language);
+        if (settings_) SetWindowTextW(settings_, settings);
+        if (transfer_) SetWindowTextW(transfer_, transfer);
+        if (more_ && !useTabs_) SetWindowTextW(more_, ExplorerText(L"更多…", language));
+        addressStar_.UpdateLanguage();
+        if (tooltip_) {
+            TOOLINFOW tool{sizeof(tool)};
+            tool.uFlags = TTF_IDISHWND;
+            tool.hwnd = bar_;
+            tool.uId = reinterpret_cast<UINT_PTR>(transfer_);
+            tool.lpszText = const_cast<wchar_t*>(transfer);
+            SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+            if (!useTabs_) {
+                tool.uId = reinterpret_cast<UINT_PTR>(settings_);
+                tool.lpszText = const_cast<wchar_t*>(settings);
+                SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+            }
+        }
+        buttonsDirty_ = true;
+    }
+
     int TabTopPadding() const { return (appearance_ & CompactTabs) ? 9 : 1; }
 
     bool SetNativeCaptionHidden(bool hidden)
@@ -868,10 +913,9 @@ private:
         if (!bar_) return;
         if (changes.action == IDC_ADD_BOOKMARK_FROM_SETTINGS) AddCurrentFavorite();
         if (changes.colorsChanged) RefreshWindowsColors();
-        if (changes.appearance != appearance_) {
-            ApplyAppearance(changes.appearance);
-            Refresh();
-        }
+        if (changes.languageChanged) ApplyLanguage();
+        if (changes.appearance != appearance_) ApplyAppearance(changes.appearance);
+        if (changes.languageChanged || buttonsDirty_) Refresh();
     }
 
     void PaintSettings(const DRAWITEMSTRUCT& item) const
@@ -886,7 +930,7 @@ private:
         if (!bookmarkGraphics_ || !DrawExplorerIcon(item.hDC, bounds, Scale(18), ExplorerIcon::Settings, color)) {
             SetBkMode(item.hDC, TRANSPARENT);
             SetTextColor(item.hDC, color);
-            DrawTextW(item.hDC, L"设置", -1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(item.hDC, ExplorerText(L"设置"), -1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         if ((item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT)) {
             InflateRect(&bounds, -Scale(1), -Scale(1));
@@ -1001,6 +1045,7 @@ private:
             }
             if (message >= 0xc000 && message == AppearanceChangedMessage()) {
                 bar->ApplyAppearance(ReadAppearance());
+                bar->ApplyLanguage();
                 bar->RefreshWindowsColors();
                 bar->Refresh();
                 return 0;
@@ -1423,7 +1468,7 @@ private:
             if (!bookmarkGraphics_ || !DrawExplorerIcon(button.hDC, bounds, Scale(20), ExplorerIcon::LanTransfer, glyph)) {
                 SetBkMode(button.hDC, TRANSPARENT);
                 SetTextColor(button.hDC, glyph);
-                DrawTextW(button.hDC, L"互传", -1, &bounds, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                DrawTextW(button.hDC, ExplorerText(L"互传"), -1, &bounds, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
             }
             if (focus) {
                 InflateRect(&bounds, -Scale(2), -Scale(2));
@@ -1607,7 +1652,7 @@ private:
     {
         if (!view_) return;
         if (!IsBookmarkPath(path)) {
-            MessageBoxW(root_, L"这个收藏不是文件夹路径。", L"LYwintabs", MB_ICONWARNING);
+            MessageBoxW(root_, ExplorerText(L"这个收藏不是文件夹路径。"), L"LYwintabs", MB_ICONWARNING);
             return;
         }
         PIDLIST_ABSOLUTE raw = nullptr;
@@ -1616,13 +1661,13 @@ private:
         const FolderId folder(raw);
         if (FAILED(resolved) || !folder || (attributes & (SFGAO_FOLDER | SFGAO_FILESYSTEM)) !=
                 (SFGAO_FOLDER | SFGAO_FILESYSTEM)) {
-            if (bar_) MessageBoxW(root_, L"无法访问这个书签的文件夹。", L"LYwintabs", MB_ICONWARNING);
+            if (bar_) MessageBoxW(root_, ExplorerText(L"无法访问这个书签的文件夹。"), L"LYwintabs", MB_ICONWARNING);
             return;
         }
         const auto active = bar_ && view_ ? FindExplorerView(root_, view_) : ExplorerView{};
         if (!active.browser) return;
         const HRESULT result = active.browser->BrowseObject(folder.get(), SBSP_ABSOLUTE | SBSP_SAMEBROWSER);
-        if (FAILED(result) && bar_) MessageBoxW(root_, L"资源管理器无法打开这个收藏。", L"LYwintabs", MB_ICONWARNING);
+        if (FAILED(result) && bar_) MessageBoxW(root_, ExplorerText(L"资源管理器无法打开这个收藏。"), L"LYwintabs", MB_ICONWARNING);
     }
 
     struct BookmarkPopup {
@@ -1698,7 +1743,7 @@ private:
         Favorite item;
         HRESULT hr = active.shellView ? ReadCurrentFavorite(*active.shellView.Get(), item) : E_FAIL;
         if (FAILED(hr) && bar_) {
-            MessageBoxW(root_, L"当前文件夹无法收藏。", L"LYwintabs", MB_ICONWARNING);
+            MessageBoxW(root_, ExplorerText(L"当前文件夹无法收藏。"), L"LYwintabs", MB_ICONWARNING);
             return;
         }
         HMODULE dll = nullptr;
@@ -1715,13 +1760,13 @@ private:
             hr = SUCCEEDED(apartment.hr) ? store_.Update(change, item, items_, position) : apartment.hr;
         }
         if (FAILED(hr)) {
-            const wchar_t* message = L"收藏保存失败。";
+            const wchar_t* message = ExplorerText(L"收藏保存失败。");
             if (hr == HRESULT_FROM_WIN32(ERROR_DIR_NOT_EMPTY)) {
-                message = L"请先在书签管理器里移走或移除文件夹内的书签。";
+                message = ExplorerText(L"请先在书签管理器里移走或移除文件夹内的书签。");
             } else if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
-                message = L"目标文件夹中已有相同地址的书签。";
+                message = ExplorerText(L"目标文件夹中已有相同地址的书签。");
             } else if (change == FavoriteChange::Move) {
-                message = L"无法移动书签，请确认目标文件夹及其嵌套层数。";
+                message = ExplorerText(L"无法移动书签，请确认目标文件夹及其嵌套层数。");
             }
             if (bar_) MessageBoxW(root_, message, L"LYwintabs", MB_ICONWARNING);
             if (bar_ && change == FavoriteChange::Move) ReloadBookmarks();
@@ -1755,9 +1800,9 @@ private:
         constexpr UINT AddFolderItem = 1;
         constexpr UINT ManagerItem = 2;
         constexpr UINT AddCurrentAddressItem = 3;
-        AppendMenuW(menu.get(), MF_STRING, AddCurrentAddressItem, L"添加当前地址到书签…");
-        AppendMenuW(menu.get(), MF_STRING, AddFolderItem, L"添加文件夹…");
-        AppendMenuW(menu.get(), MF_STRING, ManagerItem, L"书签管理器…");
+        AppendMenuW(menu.get(), MF_STRING, AddCurrentAddressItem, ExplorerText(L"添加当前地址到书签…"));
+        AppendMenuW(menu.get(), MF_STRING, AddFolderItem, ExplorerText(L"添加文件夹…"));
+        AppendMenuW(menu.get(), MF_STRING, ManagerItem, ExplorerText(L"书签管理器…"));
         const UINT command = TrackPopupMenu(menu.get(), TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
             pointer.x, pointer.y, 0, bar_, nullptr);
         if (!bar_ || !command) return;
@@ -1781,10 +1826,10 @@ private:
     {
         BookmarkMenu menu(CreatePopupMenu(), DestroyMenu);
         if (!menu || !bar_) return 0;
-        AppendMenuW(menu.get(), MF_STRING, Open, folder ? L"展开文件夹" : L"打开");
-        if (useTabs_ && !folder) AppendMenuW(menu.get(), MF_STRING, OpenInTab, L"在后台标签打开");
-        AppendMenuW(menu.get(), MF_STRING, Edit, L"编辑…");
-        AppendMenuW(menu.get(), MF_STRING, Remove, folder ? L"移除书签文件夹" : L"移除书签");
+        AppendMenuW(menu.get(), MF_STRING, Open, folder ? ExplorerText(L"展开文件夹") : ExplorerText(L"打开"));
+        if (useTabs_ && !folder) AppendMenuW(menu.get(), MF_STRING, OpenInTab, ExplorerText(L"在后台标签打开"));
+        AppendMenuW(menu.get(), MF_STRING, Edit, ExplorerText(L"编辑…"));
+        AppendMenuW(menu.get(), MF_STRING, Remove, folder ? ExplorerText(L"移除书签文件夹") : ExplorerText(L"移除书签"));
         return TrackPopupMenuEx(menu.get(), TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | extraFlags,
             point.x, point.y, bar_, nullptr);
     }
@@ -1800,7 +1845,7 @@ private:
             else OpenFavorite(item.path);
         } else if (selected == OpenInTab) {
             if (!item.IsFolder() && !tabs_.OpenFolderInBackground(item.path.c_str())) {
-                MessageBoxW(root_, L"无法在新标签中打开这个收藏。", L"LYwintabs", MB_ICONWARNING);
+                MessageBoxW(root_, ExplorerText(L"无法在新标签中打开这个收藏。"), L"LYwintabs", MB_ICONWARNING);
             }
         } else if (selected == Edit) {
             const auto oldName = item.name;
@@ -1877,7 +1922,7 @@ private:
             }
         }
         if (!background)
-            MessageBoxW(root_, L"无法打开局域网互传。请重新运行 LYwintabs 安装包以修复组件。", L"LYwintabs", MB_OK | MB_ICONERROR);
+            MessageBoxW(root_, ExplorerText(L"无法打开局域网互传。请重新运行 LYwintabs 安装包以修复组件。"), L"LYwintabs", MB_OK | MB_ICONERROR);
     }
 
     void OnCommand(WORD command)
@@ -1913,6 +1958,7 @@ private:
     ULONGLONG nextTransferFolderCheck_ = 0;
     HWND more_ = nullptr;
     HWND transfer_ = nullptr;
+    HWND tooltip_ = nullptr;
     RECT slot_{};
     RECT adjusted_{};
     bool applied_ = false;

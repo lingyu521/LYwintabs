@@ -53,6 +53,7 @@
     <ClCompile Include="BookmarkManager.cpp" />
     <ClCompile Include="ExplorerExtension.cpp" />
     <ClCompile Include="ExplorerIcons.cpp" />
+    <ClCompile Include="ExplorerLanguage.cpp" />
     <ClCompile Include="FavoritesBar.cpp" />
     <ClCompile Include="FolderTabs.cpp" />
     <ClCompile Include="WindowsTheme.cpp" />
@@ -60,6 +61,7 @@
     <ClInclude Include="ExplorerIcons.h" />
     <ClInclude Include="AddressBookmarkButton.h" />
     <ClInclude Include="ExplorerPreferences.h" />
+    <ClInclude Include="ExplorerLanguage.h" />
     <ClInclude Include="BookmarkManager.h" />
     <ClInclude Include="FolderTabs.h" />
     <ClInclude Include="WindowsTheme.h" />

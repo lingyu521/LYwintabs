@@ -3,6 +3,7 @@ using System.Drawing.Drawing2D;
 using System.Net;
 using System.Runtime.InteropServices;
 using LYIsland.Transfer;
+using static LYwintabs.Transfer.TransferLanguage;
 
 namespace LYwintabs.Transfer;
 
@@ -62,21 +63,25 @@ internal sealed class TransferPanel : Form
     private readonly Font titleFont = new("Segoe UI Semibold", 19);
     private readonly Font deviceFont = new("Segoe UI Semibold", 25);
     private readonly TransferColors colors;
+    private readonly Action translateControls;
     private LanPeer[] currentPeers = [];
     private string? offerId;
     private string? lastSavedDirectory;
     private string? decision;
     private string? notice;
+    private string? automaticNickname;
     private IncomingPrompt? incomingPrompt;
     private bool sending;
     private bool connecting;
     private bool refreshing;
     private bool savingNickname;
+    private bool networkExpanded;
     private bool starting = true;
     private bool shuttingDown;
     private bool stopped;
     private bool exitRequested;
     private int incomingUpdateQueued;
+    internal event Action? InterfaceLanguageChanged;
 
     public TransferPanel(LanNode node, DeviceNickname nicknameStore, EventWaitHandle showRequest, EventWaitHandle closeRequest,
         TransferColors? appearance = null)
@@ -206,16 +211,20 @@ internal sealed class TransferPanel : Form
         settingsNav.Click += (_, _) => ShowPage(settingsPage);
         networkToggle.Click += (_, _) =>
         {
-            network.Visible = !network.Visible;
-            networkToggle.Text = network.Visible ? "收起连接信息" : "连接信息";
+            networkExpanded = !networkExpanded;
+            network.Visible = networkExpanded;
+            networkToggle.Text = Translate(networkExpanded ? "收起连接信息" : "连接信息");
         };
         ShowPage(receivePage);
+        translateControls = Bind(this);
+        translateControls();
 
         Shown += async (_, _) => await StartListeningAsync();
         FormClosing += ClosePanel;
         node.Changed += OnNodeChanged;
         refresh.Tick += (_, _) =>
         {
+            RefreshLanguage();
             UpdateControls();
             if (showRequest.WaitOne(0) && !shuttingDown) ShowPanel();
             if (closeRequest.WaitOne(0) && !IsBusy) RequestExit();
@@ -249,12 +258,12 @@ internal sealed class TransferPanel : Form
         };
         addFiles.Click += (_, _) =>
         {
-            using var dialog = new OpenFileDialog { Multiselect = true, Title = "选择要发送的文件" };
+            using var dialog = new OpenFileDialog { Multiselect = true, Title = Translate("选择要发送的文件") };
             if (dialog.ShowDialog(this) == DialogResult.OK) AddPaths(dialog.FileNames);
         };
         addFolder.Click += (_, _) =>
         {
-            using var dialog = new FolderBrowserDialog { Description = "选择要发送的文件夹" };
+            using var dialog = new FolderBrowserDialog { Description = Translate("选择要发送的文件夹") };
             if (dialog.ShowDialog(this) == DialogResult.OK) AddPaths([dialog.SelectedPath]);
         };
         remove.Click += (_, _) =>
@@ -335,7 +344,7 @@ internal sealed class TransferPanel : Form
             if (alias.Length == 0)
             {
                 alias = await Task.Run(() => nicknameStore.AutomaticName);
-                nickname.PlaceholderText = alias;
+                nickname.PlaceholderText = automaticNickname = alias;
             }
             await Task.Run(async () =>
             {
@@ -349,10 +358,24 @@ internal sealed class TransferPanel : Form
 
     internal void ShowPanel()
     {
+        RefreshLanguage();
         if (!Visible) Show();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         if (!SetForegroundWindow(Handle)) BringToFront();
         UpdateControls();
+    }
+
+    internal void RefreshLanguage()
+    {
+        if (!TransferLanguage.Refresh()) return;
+        translateControls();
+        if (automaticNickname is not null) nickname.PlaceholderText = automaticNickname;
+        networkToggle.Text = Translate(networkExpanded ? "收起连接信息" : "连接信息");
+        listening.Tag = null;
+        UpdateNavigationDescriptions();
+        if (node.PendingIncoming is { } pending) SetIncomingTitle(pending);
+        incomingPrompt?.RefreshLanguage();
+        InterfaceLanguageChanged?.Invoke();
     }
 
     internal void RequestExit()
@@ -389,9 +412,13 @@ internal sealed class TransferPanel : Form
         receiveNav.Active = selected == receivePage;
         sendNav.Active = selected == sendPage;
         settingsNav.Active = selected == settingsPage;
-        receiveNav.AccessibleDescription = selected == receivePage ? "当前页面" : "";
-        sendNav.AccessibleDescription = selected == sendPage ? "当前页面" : "";
-        settingsNav.AccessibleDescription = selected == settingsPage ? "当前页面" : "";
+        UpdateNavigationDescriptions();
+    }
+
+    private void UpdateNavigationDescriptions()
+    {
+        foreach (var button in new[] { receiveNav, sendNav, settingsNav })
+            button.AccessibleDescription = button.Active ? Translate("当前页面") : "";
     }
 
     private Label Heading(string text) => new()
@@ -530,7 +557,7 @@ internal sealed class TransferPanel : Form
         if (saved is not null)
         {
             nickname.Text = saved;
-            if (saved.Length == 0) nickname.PlaceholderText = node.Alias;
+            if (saved.Length == 0) nickname.PlaceholderText = automaticNickname = node.Alias;
         }
         savingNickname = false;
         UpdateControls();
@@ -595,7 +622,8 @@ internal sealed class TransferPanel : Form
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
-                MessageBox.Show(prompt, ex.Message, "无法使用此接收位置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(prompt, Translate(ex.Message), Translate("无法使用此接收位置"),
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         };
         prompt.FormClosed += (_, _) =>
@@ -611,7 +639,7 @@ internal sealed class TransferPanel : Form
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "选择接收文件的保存位置", UseDescriptionForTitle = true,
+            Description = Translate("选择接收文件的保存位置"), UseDescriptionForTitle = true,
             InitialDirectory = node.ReceiveDirectory, ShowNewFolderButton = true
         };
         return dialog.ShowDialog(owner) == DialogResult.OK ? dialog.SelectedPath : null;
@@ -646,7 +674,7 @@ internal sealed class TransferPanel : Form
         {
             ShowIncomingPrompt(pending);
             offered.Items.AddRange(pending.Files.Cast<object>().ToArray());
-            incomingTitle.Text = $"来自 {pending.SenderAlias}  ·  {pending.SenderAddress}  ·  {FormatBytes(pending.TotalBytes)}";
+            SetIncomingTitle(pending);
             ShowPage(receivePage);
         }
         waitingView.Visible = pending is null;
@@ -654,13 +682,16 @@ internal sealed class TransferPanel : Form
         UpdateActions();
     }
 
+    private void SetIncomingTitle(IncomingTransfer pending) =>
+        incomingTitle.Text = $"{Translate("来自")} {pending.SenderAlias}  ·  {pending.SenderAddress}  ·  {FormatBytes(pending.TotalBytes)}";
+
     private void UpdateReceivePopup()
     {
         if (incomingPrompt is not { IsReceiving: true } prompt) return;
         var current = node.Status;
         if (current.Direction == "receive" && current.Phase is TransferPhase.Transferring or TransferPhase.Paused)
         {
-            string message = $"{current.Message}  {FormatBytes(current.BytesTransferred)} / {FormatBytes(current.TotalBytes)}";
+            string message = $"{Translate(current.Message ?? "")}  {FormatBytes(current.BytesTransferred)} / {FormatBytes(current.TotalBytes)}";
             prompt.UpdateReceiving(message, current.BytesTransferred, current.TotalBytes, current.Phase == TransferPhase.Paused);
         }
         else if (!node.IsBusy || current.Phase != TransferPhase.AwaitingDecision) DismissIncomingPrompt();
@@ -693,11 +724,12 @@ internal sealed class TransferPanel : Form
             }
             finally { devices.EndUpdate(); }
         }
-        deviceCount.Text = query.Length != 0 ? $"附近设备 · {peers.Length}/{available.Count}" :
-            peers.Length > 0 ? $"附近设备 · {peers.Length}" : "附近设备";
+        string nearby = Translate("附近设备");
+        deviceCount.Text = query.Length != 0 ? $"{nearby} · {peers.Length}/{available.Count}" :
+            peers.Length > 0 ? $"{nearby} · {peers.Length}" : nearby;
         devices.Visible = peers.Length != 0;
         deviceHint.Visible = peers.Length == 0;
-        deviceHint.Text = query.Length != 0 ? "没有符合搜索条件的设备" : "请在另一台设备上启用局域网互传";
+        deviceHint.Text = Translate(query.Length != 0 ? "没有符合搜索条件的设备" : "请在另一台设备上启用局域网互传");
     }
 
     private void UpdateControls()
@@ -707,32 +739,34 @@ internal sealed class TransferPanel : Form
         if (IsDisposed || shuttingDown || !Visible) return;
         if (node.IsListening && listening.Tag is null)
         {
-            listening.Text = "等待接收";
-            network.Text = $"{string.Join(" / ", node.GetLocalIPv4Addresses().DefaultIfEmpty("暂无"))}  ·  端口 {node.Port}";
+            listening.Text = Translate("等待接收");
+            network.Text = $"{string.Join(" / ", node.GetLocalIPv4Addresses().DefaultIfEmpty(Translate("暂无")))}  ·  {Translate("端口")} {node.Port}";
             listening.Tag = true;
         }
         else if (!node.IsListening)
-            listening.Text = starting ? "正在启用局域网互传…" : "局域网互传未启动";
+            listening.Text = Translate(starting ? "正在启用局域网互传…" : "局域网互传未启动");
 
         if (sendPage.Visible) RefreshDeviceList();
         var info = node.Status;
         advertisedName.Text = node.Alias;
         lastSavedDirectory = info.SavedDirectory ?? lastSavedDirectory;
         destination.Text = node.ReceiveDirectory;
-        fileCount.Text = files.Items.Count == 0 ? "待发送文件" : $"待发送 · {files.Items.Count} 项";
+        string filesToSend = Translate("待发送文件");
+        fileCount.Text = files.Items.Count == 0 ? filesToSend : $"{filesToSend} · {files.Items.Count}";
         files.Visible = remove.Visible = files.Items.Count != 0;
         dropHint.Visible = files.Items.Count == 0;
         progress.Visible = info.Phase is TransferPhase.Transferring or TransferPhase.Paused;
         progress.Value = info.TotalBytes > 0
             ? (int)Math.Clamp(1000.0 * info.BytesTransferred / info.TotalBytes, 0, 1000) : 0;
         bool unrelatedReceiveStatus = sendPage.Visible && info.Direction == "receive" && !node.IsBusy;
-        status.Text = notice ?? (unrelatedReceiveStatus ? "" : info.Phase switch
+        string message = Translate(info.Message ?? "");
+        status.Text = notice is not null ? Translate(notice) : (unrelatedReceiveStatus ? "" : info.Phase switch
         {
-            TransferPhase.Transferring => $"{info.Message}  {info.CompletedFiles}/{info.FileCount}  " +
+            TransferPhase.Transferring => $"{message}  {info.CompletedFiles}/{info.FileCount}  " +
                 $"{FormatBytes(info.BytesTransferred)} / {FormatBytes(info.TotalBytes)}  {FormatBytes((long)info.BytesPerSecond)}/s",
-            TransferPhase.Paused => $"{info.Message}  {FormatBytes(info.BytesTransferred)} / {FormatBytes(info.TotalBytes)}",
-            TransferPhase.Idle => node.LastError ?? "",
-            _ => info.Message ?? ""
+            TransferPhase.Paused => $"{message}  {FormatBytes(info.BytesTransferred)} / {FormatBytes(info.TotalBytes)}",
+            TransferPhase.Idle => Translate(node.LastError ?? ""),
+            _ => message
         });
         status.Visible = status.Text.Length != 0;
         UpdateActions();
@@ -754,8 +788,8 @@ internal sealed class TransferPanel : Form
         var current = node.Status;
         bool receiving = current.Direction == "receive" && current.Phase is TransferPhase.Transferring or TransferPhase.Paused;
         pauseReceive.Visible = pauseReceive.Enabled = receiving && !shuttingDown;
-        pauseReceive.Text = current.Phase == TransferPhase.Paused ? "继续" : "暂停";
-        cancel.Text = receiving ? "终止接收" : "取消传输";
+        pauseReceive.Text = Translate(current.Phase == TransferPhase.Paused ? "继续" : "暂停");
+        cancel.Text = Translate(receiving ? "终止接收" : "取消传输");
         openSaved.Visible = lastSavedDirectory is not null;
         openSaved.Enabled = lastSavedDirectory is not null && !shuttingDown;
     }
@@ -784,7 +818,7 @@ internal sealed class TransferPanel : Form
         DismissIncomingPrompt();
         refresh.Stop();
         UpdateActions();
-        status.Text = "正在停止局域网接收…";
+        status.Text = Translate("正在停止局域网接收…");
         status.Visible = true;
         try { await Task.Run(async () => await node.DisposeAsync()); }
         catch (Exception ex) { Debug.WriteLine(ex); }

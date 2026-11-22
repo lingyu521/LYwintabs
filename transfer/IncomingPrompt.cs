@@ -1,4 +1,5 @@
 using LYIsland.Transfer;
+using static LYwintabs.Transfer.TransferLanguage;
 
 namespace LYwintabs.Transfer;
 
@@ -10,13 +11,22 @@ internal sealed class IncomingPrompt : Form
     internal event Action? StopRequested;
     private readonly Label destination;
     private readonly Label fileDetail;
+    private readonly Label sender;
+    private readonly Label summary;
+    private readonly IncomingTransfer request;
+    private readonly string total;
+    private readonly Action translateControls;
     private readonly Button accept, saveAs, reject, pause, stop;
     private readonly ProgressBar progress = new() { Dock = DockStyle.Top, Maximum = 1000, Height = 7, Visible = false };
     internal bool IsReceiving { get; private set; }
     private bool paused;
+    private string receiveDirectory;
 
     public IncomingPrompt(IncomingTransfer request, string receiveDirectory, string total, TransferColors colors, Font font)
     {
+        this.request = request;
+        this.total = total;
+        this.receiveDirectory = receiveDirectory;
         Text = "LYwintabs · 接收文件";
         Font = font;
         BackColor = colors.Surface;
@@ -35,13 +45,14 @@ internal sealed class IncomingPrompt : Form
         body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         body.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        body.Controls.Add(Line($"来自 {request.SenderAlias} · {request.SenderAddress}", colors.Text), 0, 0);
-        body.Controls.Add(Line($"请求发送 {request.Files.Count} 个文件（{total}）", colors.Text), 0, 1);
+        sender = Line("", colors.Text);
+        summary = Line("", colors.Text);
+        body.Controls.Add(sender, 0, 0);
+        body.Controls.Add(summary, 0, 1);
         var file = request.Files.FirstOrDefault();
-        fileDetail = Line(file is null ? "" : file.Name, colors.Muted);
+        fileDetail = Line("", colors.Muted);
         body.Controls.Add(fileDetail, 0, 2);
         destination = Line("", colors.Muted);
-        SetReceiveDirectory(receiveDirectory);
         body.Controls.Add(destination, 0, 3);
         body.Controls.Add(progress, 0, 4);
 
@@ -65,6 +76,9 @@ internal sealed class IncomingPrompt : Form
         body.Controls.Add(actions, 0, 5);
         Controls.Add(body);
         CancelButton = reject;
+        translateControls = Bind(this);
+        fileDetail.Text = file?.Name ?? "";
+        RefreshLanguage();
 
         TransferAction CreateAction(string label, string name, TransferGlyph glyph, Color ink) => new(label, glyph)
         {
@@ -102,7 +116,7 @@ internal sealed class IncomingPrompt : Form
         accept.Visible = saveAs.Visible = reject.Visible = false;
         progress.Visible = pause.Visible = stop.Visible = true;
         pause.Enabled = false;
-        fileDetail.Text = "正在准备接收…";
+        fileDetail.Text = Translate("正在准备接收…");
     }
 
     internal void UpdateReceiving(string detail, long bytes, long total, bool isPaused)
@@ -110,11 +124,26 @@ internal sealed class IncomingPrompt : Form
         paused = isPaused;
         fileDetail.Text = detail;
         progress.Value = total == 0 ? 0 : (int)Math.Clamp(bytes * 1000d / total, 0, 1000);
-        pause.Text = paused ? "继续" : "暂停";
+        pause.Text = Translate(paused ? "继续" : "暂停");
         pause.Enabled = stop.Enabled;
     }
 
-    internal void SetReceiveDirectory(string directory) => destination.Text = "保存到 " + directory;
+    internal void SetReceiveDirectory(string directory)
+    {
+        receiveDirectory = directory;
+        destination.Text = $"{Translate("保存到")} {directory}";
+    }
+
+    internal void RefreshLanguage()
+    {
+        translateControls();
+        sender.Text = $"{Translate("来自")} {request.SenderAlias} · {request.SenderAddress}";
+        summary.Text = English
+            ? $"Incoming files: {request.Files.Count} ({total})"
+            : $"请求发送 {request.Files.Count} 个文件（{total}）";
+        SetReceiveDirectory(receiveDirectory);
+        pause.Text = Translate(paused ? "继续" : "暂停");
+    }
 
     private static Label Line(string text, Color ink) => new()
     {

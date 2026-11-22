@@ -1,4 +1,5 @@
 #include "BookmarkManager.h"
+#include "ExplorerLanguage.h"
 
 #include "Favorites.h"
 #include "Resource.h"
@@ -21,7 +22,7 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 using ItemName = std::unique_ptr<wchar_t, decltype(&CoTaskMemFree)>;
-constexpr wchar_t BookmarkRootName[] = L"书签栏";
+const wchar_t* BookmarkRootName() noexcept { return ExplorerText(L"书签栏"); }
 constexpr int MaxBookmarkName = 255;
 constexpr int MaxBookmarkAddress = 32767;
 
@@ -49,6 +50,7 @@ struct BookmarkNameDialog {
 INT_PTR CALLBACK RenameBookmarkDialog(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if (message == WM_INITDIALOG) {
+        LocalizeExplorerDialog(dialog, ReadUiLanguage());
         SetWindowLongPtrW(dialog, DWLP_USER, lParam);
         const auto& state = *reinterpret_cast<const BookmarkNameDialog*>(lParam);
         SetWindowTextW(dialog, state.caption);
@@ -99,7 +101,7 @@ HRESULT PickBookmarkFolder(HWND owner, Favorite& item)
     if (FAILED(hr)) return hr;
     hr = picker->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_DONTADDTORECENT);
     if (FAILED(hr)) return hr;
-    picker->SetTitle(L"选择书签文件夹");
+    picker->SetTitle(ExplorerText(L"选择书签文件夹"));
     hr = picker->Show(owner);
     if (FAILED(hr)) return hr;
 
@@ -152,7 +154,7 @@ FolderChildren IndexFolders(const std::vector<Favorite>& items)
 
 bool PopulateDestinations(HWND combo, const std::vector<Favorite>& items, std::wstring_view selectedId)
 {
-    const int root = ComboBox_AddString(combo, BookmarkRootName);
+    const int root = ComboBox_AddString(combo, BookmarkRootName());
     if (root < 0 || ComboBox_SetItemData(combo, root, 0) == CB_ERR) return false;
     int selected = root;
     const auto children = IndexFolders(items);
@@ -169,7 +171,7 @@ bool PopulateDestinations(HWND combo, const std::vector<Favorite>& items, std::w
         }
         return true;
     };
-    return append(append, {}, BookmarkRootName) && ComboBox_SetCurSel(combo, selected) != CB_ERR;
+    return append(append, {}, BookmarkRootName()) && ComboBox_SetCurSel(combo, selected) != CB_ERR;
 }
 
 struct BookmarkEditor {
@@ -182,7 +184,7 @@ bool InitializeEditor(HWND dialog, const BookmarkEditor& state)
     const auto& bookmark = state.bookmark;
     if (state.destinations && !PopulateDestinations(GetDlgItem(dialog, IDC_BOOKMARK_DESTINATION),
             *state.destinations, bookmark.parentId)) return false;
-    if (bookmark.id.empty()) SetWindowTextW(dialog, L"添加书签");
+    if (bookmark.id.empty()) SetWindowTextW(dialog, ExplorerText(L"添加书签"));
     Edit_LimitText(GetDlgItem(dialog, IDC_BOOKMARK_NAME), MaxBookmarkName);
     Edit_LimitText(GetDlgItem(dialog, IDC_BOOKMARK_ADDRESS), MaxBookmarkAddress);
     SetDlgItemTextW(dialog, IDC_BOOKMARK_NAME, bookmark.name.c_str());
@@ -210,6 +212,7 @@ INT_PTR CALLBACK BookmarkEditorProc(HWND dialog, UINT message, WPARAM wParam, LP
     if (!state) return FALSE;
     try {
         if (message == WM_INITDIALOG) {
+            LocalizeExplorerDialog(dialog, ReadUiLanguage());
             if (!InitializeEditor(dialog, *state)) EndDialog(dialog, -1);
             return FALSE;
         }
@@ -224,7 +227,7 @@ INT_PTR CALLBACK BookmarkEditorProc(HWND dialog, UINT message, WPARAM wParam, LP
                     SetDlgItemTextW(dialog, IDC_BOOKMARK_NAME, picked.name.c_str());
                 }
             } else if (result != HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
-                MessageBoxW(dialog, L"无法选择文件夹。", L"LYwintabs", MB_ICONWARNING);
+                MessageBoxW(dialog, ExplorerText(L"无法选择文件夹。"), L"LYwintabs", MB_ICONWARNING);
             }
             return TRUE;
         }
@@ -235,7 +238,7 @@ INT_PTR CALLBACK BookmarkEditorProc(HWND dialog, UINT message, WPARAM wParam, LP
             }
             std::ranges::replace(path, L'/', L'\\');
             if (!IsBookmarkPath(path)) {
-                MessageBoxW(dialog, L"请输入完整的文件夹地址，例如 C:\\项目 或 \\\\服务器\\共享。",
+                MessageBoxW(dialog, ExplorerText(L"请输入完整的文件夹地址，例如 C:\\项目 或 \\\\服务器\\共享。"),
                     L"LYwintabs", MB_ICONWARNING);
                 const HWND address = GetDlgItem(dialog, IDC_BOOKMARK_ADDRESS);
                 SetFocus(address);
@@ -243,7 +246,7 @@ INT_PTR CALLBACK BookmarkEditorProc(HWND dialog, UINT message, WPARAM wParam, LP
                 return TRUE;
             }
             if (IsKnownLocalFile(path)) {
-                MessageBoxW(dialog, L"所填地址是文件。请选择文件夹地址。", L"LYwintabs", MB_ICONWARNING);
+                MessageBoxW(dialog, ExplorerText(L"所填地址是文件。请选择文件夹地址。"), L"LYwintabs", MB_ICONWARNING);
                 const HWND address = GetDlgItem(dialog, IDC_BOOKMARK_ADDRESS);
                 SetFocus(address);
                 Edit_SetSel(address, 0, -1);
@@ -264,7 +267,7 @@ INT_PTR CALLBACK BookmarkEditorProc(HWND dialog, UINT message, WPARAM wParam, LP
             return FALSE;
         }
     } catch (...) {
-        MessageBoxW(dialog, L"无法完成书签编辑。", L"LYwintabs", MB_ICONWARNING);
+        MessageBoxW(dialog, ExplorerText(L"无法完成书签编辑。"), L"LYwintabs", MB_ICONWARNING);
         if (message == WM_INITDIALOG) EndDialog(dialog, IDCANCEL);
         return TRUE;
     }
@@ -276,7 +279,7 @@ bool EditBookmark(HWND owner, HINSTANCE instance, Favorite& bookmark,
     BookmarkEditor state{bookmark, destinations};
     const auto resource = MAKEINTRESOURCEW(destinations ? IDD_BOOKMARK_QUICK_ADD : IDD_BOOKMARK_EDITOR);
     const auto result = DialogBoxParamW(instance, resource, owner, BookmarkEditorProc, reinterpret_cast<LPARAM>(&state));
-    if (result == -1) MessageBoxW(owner, L"无法打开书签编辑窗口。", L"LYwintabs", MB_ICONWARNING);
+    if (result == -1) MessageBoxW(owner, ExplorerText(L"无法打开书签编辑窗口。"), L"LYwintabs", MB_ICONWARNING);
     return result == IDOK;
 }
 
@@ -295,7 +298,7 @@ bool PopulateFolders(HWND tree, const std::vector<Favorite>& items, std::wstring
     std::wstring_view omittedId = {})
 {
     TreeView_DeleteAllItems(tree);
-    const HTREEITEM root = InsertFolder(tree, TVI_ROOT, BookmarkRootName, 0);
+    const HTREEITEM root = InsertFolder(tree, TVI_ROOT, BookmarkRootName(), 0);
     if (!root) return false;
     HTREEITEM selection = root;
     const auto children = IndexFolders(items);
@@ -347,6 +350,7 @@ INT_PTR CALLBACK MoveBookmarkProc(HWND dialog, UINT message, WPARAM wParam, LPAR
     const HWND tree = GetDlgItem(dialog, IDC_BOOKMARK_MOVE_TREE);
     try {
         if (message == WM_INITDIALOG) {
+            LocalizeExplorerDialog(dialog, ReadUiLanguage());
             if (!PopulateFolders(tree, state->items, state->item.parentId,
                     state->item.IsFolder() ? std::wstring_view(state->item.id) : std::wstring_view{})) {
                 EndDialog(dialog, IDCANCEL);
@@ -366,7 +370,7 @@ INT_PTR CALLBACK MoveBookmarkProc(HWND dialog, UINT message, WPARAM wParam, LPAR
             return FALSE;
         }
     } catch (...) {
-        MessageBoxW(dialog, L"无法选择目标书签文件夹。", L"LYwintabs", MB_ICONWARNING);
+        MessageBoxW(dialog, ExplorerText(L"无法选择目标书签文件夹。"), L"LYwintabs", MB_ICONWARNING);
         EndDialog(dialog, IDCANCEL);
         return TRUE;
     }
@@ -379,12 +383,12 @@ public:
     bool Show(HWND owner)
     {
         if (FAILED(store_.Load(items_))) {
-            MessageBoxW(owner, L"无法读取书签。", L"LYwintabs", MB_ICONWARNING);
+            MessageBoxW(owner, ExplorerText(L"无法读取书签。"), L"LYwintabs", MB_ICONWARNING);
             return false;
         }
         if (DialogBoxParamW(instance_, MAKEINTRESOURCEW(IDD_BOOKMARK_MANAGER), owner, DialogProc,
                 reinterpret_cast<LPARAM>(this)) == -1) {
-            MessageBoxW(owner, L"无法打开书签管理器。", L"LYwintabs", MB_ICONWARNING);
+            MessageBoxW(owner, ExplorerText(L"无法打开书签管理器。"), L"LYwintabs", MB_ICONWARNING);
         }
         return changed_;
     }
@@ -398,7 +402,7 @@ private:
         try {
             return manager->HandleMessage(dialog, message, wParam, lParam);
         } catch (...) {
-            MessageBoxW(dialog, L"无法完成书签操作。", L"LYwintabs", MB_ICONWARNING);
+            MessageBoxW(dialog, ExplorerText(L"无法完成书签操作。"), L"LYwintabs", MB_ICONWARNING);
             if (message == WM_INITDIALOG) EndDialog(dialog, IDCANCEL);
             return TRUE;
         }
@@ -407,6 +411,7 @@ private:
     INT_PTR HandleMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     {
         if (message == WM_INITDIALOG) {
+            LocalizeExplorerDialog(dialog, ReadUiLanguage());
             list_ = GetDlgItem(dialog, IDC_BOOKMARK_LIST);
             tree_ = GetDlgItem(dialog, IDC_BOOKMARK_TREE);
             if (!list_ || !tree_ || !InitializeList() || !RebuildView(dialog)) {
@@ -487,14 +492,12 @@ private:
         GetClientRect(list_, &bounds);
         const int usableWidth = bounds.right - GetSystemMetricsForDpi(SM_CXVSCROLL, GetDpiForWindow(list_));
         const int nameWidth = usableWidth * 2 / 5;
-        wchar_t name[] = L"名称";
-        wchar_t path[] = L"文件夹地址";
         LVCOLUMNW column{};
         column.mask = LVCF_TEXT | LVCF_WIDTH;
-        column.pszText = name;
+        column.pszText = const_cast<wchar_t*>(ExplorerText(L"名称"));
         column.cx = nameWidth;
         if (ListView_InsertColumn(list_, 0, &column) == -1) return false;
-        column.pszText = path;
+        column.pszText = const_cast<wchar_t*>(ExplorerText(L"文件夹地址"));
         column.cx = usableWidth - nameWidth;
         return ListView_InsertColumn(list_, 1, &column) != -1;
     }
@@ -515,6 +518,7 @@ private:
         const std::wstring location = FolderLocation();
         SetDlgItemTextW(dialog, IDC_BOOKMARK_LOCATION, location.c_str());
         ListView_DeleteAllItems(list_);
+        const auto folderLabel = const_cast<wchar_t*>(ExplorerText(L"书签文件夹"));
         int row = 0;
         int selected = -1;
         for (size_t index = 0; index < items_.size(); ++index) {
@@ -527,7 +531,6 @@ private:
             entry.lParam = static_cast<LPARAM>(index);
             const int inserted = ListView_InsertItem(list_, &entry);
             if (inserted == -1) break;
-            wchar_t folderLabel[] = L"书签文件夹";
             ListView_SetItemText(list_, inserted, 1, item.IsFolder() ? folderLabel : item.path.data());
             if (item.id == selection) selected = inserted;
         }
@@ -548,7 +551,7 @@ private:
             path = L"  ›  " + folder->name + path;
             parent = folder->parentId;
         }
-        return BookmarkRootName + path;
+        return BookmarkRootName() + path;
     }
 
     const Favorite* ItemAtRow(int row) const
@@ -708,17 +711,17 @@ private:
             RebuildView(dialog, item.id);
             return false;
         }
-        const wchar_t* error = L"无法保存书签。";
+        const wchar_t* error = ExplorerText(L"无法保存书签。");
         if (hr == HRESULT_FROM_WIN32(ERROR_DIR_NOT_EMPTY)) {
-            error = L"请先移出这个书签文件夹中的项目，再移除文件夹。";
+            error = ExplorerText(L"请先移出这个书签文件夹中的项目，再移除文件夹。");
         } else if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) || (hr == S_FALSE && change == FavoriteChange::Add)) {
-            error = item.IsFolder() ? L"这里已有同名的书签文件夹。" : L"目标书签文件夹中已有相同地址的书签。";
+            error = item.IsFolder() ? ExplorerText(L"这里已有同名的书签文件夹。") : ExplorerText(L"目标书签文件夹中已有相同地址的书签。");
         } else if (hr == HRESULT_FROM_WIN32(ERROR_FILENAME_EXCED_RANGE)) {
-            error = L"书签文件夹的嵌套层数已达上限。";
+            error = ExplorerText(L"书签文件夹的嵌套层数已达上限。");
         } else if (hr == HRESULT_FROM_WIN32(ERROR_DIRECTORY) || hr == HRESULT_FROM_WIN32(ERROR_CIRCULAR_DEPENDENCY)
             || hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND)
             || hr == S_FALSE) {
-            error = L"书签或目标文件夹已更改。请重新选择后再试。";
+            error = ExplorerText(L"书签或目标文件夹已更改。请重新选择后再试。");
         }
         if (hr != S_FALSE) {
             std::vector<Favorite> current;
@@ -782,8 +785,8 @@ private:
         const Menu menu(CreatePopupMenu(), DestroyMenu);
         if (!menu) return;
         ListView_SetItemState(list_, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        if (folder) AppendMenuW(menu.get(), MF_STRING, Expand, L"展开文件夹");
-        AppendMenuW(menu.get(), MF_STRING, EditItem, L"编辑…");
+        if (folder) AppendMenuW(menu.get(), MF_STRING, Expand, ExplorerText(L"展开文件夹"));
+        AppendMenuW(menu.get(), MF_STRING, EditItem, ExplorerText(L"编辑…"));
         const DWORD position = GetMessagePos();
         const UINT action = TrackPopupMenu(menu.get(), TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
             GET_X_LPARAM(position), GET_Y_LPARAM(position), 0, dialog, nullptr);
@@ -844,19 +847,19 @@ bool ShowBookmarkManager(HWND owner, HINSTANCE instance, const Favorites& store)
     } catch (...) {
         // Explorer dialog callbacks must not propagate failures through Windows.
     }
-    MessageBoxW(owner, L"无法打开书签管理器。", L"LYwintabs", MB_ICONWARNING);
+    MessageBoxW(owner, ExplorerText(L"无法打开书签管理器。"), L"LYwintabs", MB_ICONWARNING);
     return false;
 }
 
 bool ShowBookmarkEdit(HWND owner, HINSTANCE instance, Favorite& bookmark)
 {
-    return bookmark.IsFolder() ? ShowBookmarkName(owner, instance, bookmark.name, L"编辑书签文件夹") :
+    return bookmark.IsFolder() ? ShowBookmarkName(owner, instance, bookmark.name, ExplorerText(L"编辑书签文件夹")) :
         EditBookmark(owner, instance, bookmark);
 }
 
 bool ShowBookmarkFolderName(HWND owner, HINSTANCE instance, std::wstring& name)
 {
-    return ShowBookmarkName(owner, instance, name, L"新建书签文件夹");
+    return ShowBookmarkName(owner, instance, name, ExplorerText(L"新建书签文件夹"));
 }
 
 bool ShowBookmarkAdd(HWND owner, HINSTANCE instance, const Favorites& store, Favorite bookmark)
@@ -870,13 +873,13 @@ bool ShowBookmarkAdd(HWND owner, HINSTANCE instance, const Favorites& store, Fav
             const HRESULT hr = store.Update(FavoriteChange::Add, bookmark, items);
             if (hr == S_OK) return true;
             if (hr == S_FALSE) {
-                MessageBoxW(owner, L"这个地址已经收藏到所选的书签文件夹。", L"LYwintabs", MB_ICONINFORMATION);
+                MessageBoxW(owner, ExplorerText(L"这个地址已经收藏到所选的书签文件夹。"), L"LYwintabs", MB_ICONINFORMATION);
                 return false;
             }
         }
     } catch (...) {
         // Explorer dialog callbacks must not propagate failures through Windows.
     }
-    MessageBoxW(owner, L"无法保存书签。", L"LYwintabs", MB_ICONWARNING);
+    MessageBoxW(owner, ExplorerText(L"无法保存书签。"), L"LYwintabs", MB_ICONWARNING);
     return false;
 }

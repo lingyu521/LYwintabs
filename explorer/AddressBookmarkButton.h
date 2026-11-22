@@ -10,6 +10,7 @@ public:
     AddressBookmarkButton& operator=(const AddressBookmarkButton&) = delete;
 
     void Refresh(HWND root, HWND commandSink, WORD command, bool dark, bool vectorIcons);
+    void UpdateLanguage();
     void Close();
     bool IsVisible() const noexcept { return frame_ && IsWindowVisible(frame_); }
 

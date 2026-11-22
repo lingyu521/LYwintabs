@@ -1,4 +1,5 @@
 #include "FolderTabs.h"
+#include "ExplorerLanguage.h"
 
 #include <commctrl.h>
 #include <shellapi.h>
@@ -43,7 +44,7 @@ std::wstring FolderLabel(PCIDLIST_ABSOLUTE folder)
     PWSTR name = nullptr;
     const HRESULT result = SHGetNameFromIDList(folder, SIGDN_NORMALDISPLAY, &name);
     const std::unique_ptr<wchar_t, ShellMemory> text(name);
-    return SUCCEEDED(result) && text && *text.get() ? text.get() : L"文件夹";
+    return SUCCEEDED(result) && text && *text.get() ? text.get() : ExplorerText(L"文件夹");
 }
 
 void Place(HWND window, int x, int y, int width, int height)
@@ -543,8 +544,8 @@ bool FolderTabs::ContextMenu(HWND source, LPARAM point)
     const size_t index = static_cast<size_t>(tab - tabs_.begin());
     const HMENU menu = CreatePopupMenu();
     if (!menu) return true;
-    AppendMenuW(menu, MF_STRING, 1, L"复制标签");
-    AppendMenuW(menu, MF_STRING, 2, L"关闭标签");
+    AppendMenuW(menu, MF_STRING, 1, ExplorerText(L"复制标签"));
+    AppendMenuW(menu, MF_STRING, 2, ExplorerText(L"关闭标签"));
     RECT bounds{};
     GetWindowRect(source, &bounds);
     const UINT chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,

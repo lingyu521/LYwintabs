@@ -3,6 +3,7 @@ using System.Text;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using LYIsland.Transfer;
+using static LYwintabs.Transfer.TransferLanguage;
 
 namespace LYwintabs.Transfer;
 
@@ -47,9 +48,9 @@ internal static class Program
             using var context = new ApplicationContext();
             using var trayMenu = new ContextMenuStrip();
             using var trayIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-            using var tray = new NotifyIcon { Icon = trayIcon ?? SystemIcons.Application, Text = "LYwintabs 局域网互传", ContextMenuStrip = trayMenu };
-            trayMenu.Items.Add("打开互传", null, (_, _) => panel.ShowPanel());
-            var settings = trayMenu.Items.Add("设置");
+            using var tray = new NotifyIcon { Icon = trayIcon ?? SystemIcons.Application, ContextMenuStrip = trayMenu };
+            var open = trayMenu.Items.Add("", null, (_, _) => panel.ShowPanel());
+            var settings = trayMenu.Items.Add("");
             settings.Click += async (_, _) =>
             {
                 settings.Enabled = false;
@@ -57,18 +58,35 @@ internal static class Program
                 {
                     string launcher = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "LYwintabs.Launcher.exe"));
                     using var dialog = Process.Start(new ProcessStartInfo(launcher, "--settings") { UseShellExecute = false });
-                    if (dialog is null) throw new InvalidOperationException("无法启动设置窗口。");
+                    if (dialog is null) throw new InvalidOperationException(Translate("无法启动设置窗口。"));
                     _ = AllowSetForegroundWindow(dialog.Id);
                     await dialog.WaitForExitAsync();
-                    if (dialog.ExitCode != 0) throw new InvalidOperationException($"无法打开设置（{dialog.ExitCode}）。");
+                    if (dialog.ExitCode != 0)
+                        throw new InvalidOperationException(English
+                            ? $"Could not open Settings (error {dialog.ExitCode})."
+                            : $"无法打开设置（{dialog.ExitCode}）。");
                 }
                 catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
                 {
                     MessageBox.Show(ex.Message, "LYwintabs", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
-                finally { settings.Enabled = true; }
+                finally
+                {
+                    settings.Enabled = true;
+                    panel.RefreshLanguage();
+                }
             };
-            trayMenu.Items.Add("退出互传", null, (_, _) => panel.RequestExit());
+            var exit = trayMenu.Items.Add("", null, (_, _) => panel.RequestExit());
+            void RefreshTrayText()
+            {
+                tray.Text = Translate("LYwintabs 局域网互传");
+                open.Text = Translate("打开互传");
+                settings.Text = Translate("设置");
+                exit.Text = Translate("退出互传");
+            }
+            RefreshTrayText();
+            panel.InterfaceLanguageChanged += RefreshTrayText;
+            trayMenu.Opening += (_, _) => panel.RefreshLanguage();
             tray.DoubleClick += (_, _) => panel.ShowPanel();
             panel.FormClosed += (_, _) => context.ExitThread();
             tray.Visible = true;
@@ -84,7 +102,8 @@ internal static class Program
         catch (Exception ex)
         {
             if (background) Debug.WriteLine(ex);
-            else MessageBox.Show("无法打开局域网互传。\n" + ex.Message, "LYwintabs", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            else MessageBox.Show(Translate("无法打开局域网互传。") + "\n" + Translate(ex.Message),
+                "LYwintabs", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
         finally

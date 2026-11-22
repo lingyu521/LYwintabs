@@ -1,4 +1,5 @@
 #include "AddressBookmarkButton.h"
+#include "ExplorerLanguage.h"
 #include "ExplorerIcons.h"
 
 #include <commctrl.h>
@@ -165,11 +166,16 @@ bool AddressBookmarkButton::CreateButton()
         frame_ = nullptr;
         return false;
     }
-    button_ = CreateWindowExW(0, L"Button", L"收藏当前文件夹", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+    button_ = CreateWindowExW(0, L"Button", ExplorerText(L"收藏当前文件夹"), WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
         0, 0, 0, 0, frame_, nullptr, nullptr, nullptr);
     if (button_) return true;
     DestroyWindow(frame_);
     return false;
+}
+
+void AddressBookmarkButton::UpdateLanguage()
+{
+    if (button_) SetWindowTextW(button_, ExplorerText(L"收藏当前文件夹"));
 }
 
 void AddressBookmarkButton::RestoreAddress()
