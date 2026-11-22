@@ -9,9 +9,11 @@ LYwintabs 集成在 Windows 自带的文件资源管理器中。通过任务栏�
 
 ## 下载和使用
 
-[下载 0.1.0-preview.27 安装包（Windows x64）](https://github.com/lingyu521/LYwintabs/releases/download/v0.1.0-preview.27/LYwintabs-Win10-x64-0.1.0-preview.27-Setup.exe) · [查看发布说明](https://github.com/lingyu521/LYwintabs/releases/tag/v0.1.0-preview.27)
+[下载 0.1.0-preview.28 双语版（Windows x64）](https://github.com/lingyu521/LYwintabs/releases/download/v0.1.0-preview.28/LYwintabs-Win10-x64-0.1.0-preview.28-Setup.exe) · [查看发布说明](https://github.com/lingyu521/LYwintabs/releases/tag/v0.1.0-preview.28)
 
 运行安装包，阅读最终用户许可协议并选择安装目录。插件的齿轮菜单提供主题、收藏栏显示和开机启动等设置。
+
+在「设置 → 界面语言」中可切换简体中文和 English。首次启动根据 Windows 显示语言选择，手动选择后会保存，并应用于资源管理器插件和局域网互传。
 
 ![最终用户许可协议安装页]
 
@@ -54,7 +56,7 @@ Windows 11 的新建、切换和关闭标签页使用系统原生控件。横向
 
 ## 兼容性
 
-目标平台为 Windows 10 22H2 x64 和 Windows 11 x64。当前安装包的 EULA 页面、安装及卸载已在 Windows 10 22H2（19045.6456）实测。preview.27 的原生文件夹导航和互传自动启动已在 Windows 10 22H2 和 Windows 11 25H2 验证。
+目标平台为 Windows 10 22H2 x64 和 Windows 11 x64。preview.28 已在 Windows 10 22H2（19045.6456）验证静默安装、中英文双向切换、收件弹窗和卸载，双语功能在 Windows 11 待测。preview.27 的 EULA 页面已在 Windows 10 22H2 实测，原生文件夹导航和互传自动启动已在 Windows 10 22H2 和 Windows 11 25H2 验证。
 
 ## 从源码构建
 
