@@ -17,12 +17,6 @@ using FolderId = std::unique_ptr<std::remove_pointer_t<PIDLIST_ABSOLUTE>, ShellM
 
 HRESULT ReadCurrentFolder(IShellView& view, FolderId& id);
 
-struct CaptionColors {
-    COLORREF surface;
-    COLORREF text;
-    bool operator==(const CaptionColors&) const = default;
-};
-
 struct TabPalette {
     COLORREF surface;
     COLORREF inactive;
@@ -30,7 +24,6 @@ struct TabPalette {
     COLORREF hover;
     COLORREF pressed;
     COLORREF text;
-    COLORREF icon;
     COLORREF selectedText;
     COLORREF selectedBorder;
     bool highContrast = false;
@@ -43,6 +36,7 @@ public:
     void SetBrowser(IShellBrowser* browser) { browser_ = browser; }
     bool HasBrowser() const { return browser_ != nullptr; }
     void Observe();
+    void SetFont(HFONT font);
     void SetLayoutOptions(int leadingWidthDip, int topPaddingDip);
     void Layout(int width, int height, UINT dpi);
     bool Command(HWND source);
@@ -50,7 +44,8 @@ public:
     bool Notify(NMHDR& message);
     bool OpenFolderInBackground(const wchar_t* path);
     bool Draw(const DRAWITEMSTRUCT& item) const;
-    void SetColors(bool dark, std::optional<CaptionColors> caption);
+    void DrawActiveTabCorners(HDC dc) const;
+    void SetColors(bool dark);
     TabPalette Colors() const;
 
 private:
@@ -87,11 +82,13 @@ private:
     void CancelNavigation(const Navigation& navigation);
     void ShowAllTabs();
     HWND Button(const wchar_t* label);
+    HFONT Font() const;
     static LRESULT CALLBACK TabButtonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
         UINT_PTR, DWORD_PTR context);
     bool UpdateDrag(HWND window, LPARAM pointer);
     void FinishDrag(bool drop);
     void InvalidateTab(HWND label) const;
+    void InvalidateCorners() const;
     void SetHoveredControl(HWND control);
 
     Microsoft::WRL::ComPtr<IShellBrowser> browser_;
@@ -104,6 +101,9 @@ private:
     HWND more_ = nullptr;
     HWND tooltip_ = nullptr;
     HWND hovered_ = nullptr;
+    HFONT font_ = nullptr;
+    HFONT addGlyphFont_ = nullptr;
+    HFONT closeGlyphFont_ = nullptr;
     std::wstring tooltipText_;
     size_t active_ = 0;
     int width_ = 0;
@@ -113,5 +113,4 @@ private:
     UINT dpi_ = 96;
     bool dark_ = false;
     bool touch_ = false;
-    std::optional<CaptionColors> caption_;
 };

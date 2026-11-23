@@ -10,18 +10,18 @@ inline constexpr wchar_t AppearanceValue[] = L"Appearance";
 enum AppearanceOption : DWORD {
     CompactTabs = 1,
     CompactFavorites = 2,
-    ShowFolderTitle = 4,
     ShowQuickAccessToolbar = 8,
     HideBookmarks = 16,
+    HideFolderTitle = 128,
 };
 
 inline DWORD ReadAppearance()
 {
-    constexpr DWORD legacyPluginTheme = 32 | 64;
+    constexpr DWORD legacyAppearance = 4 | 32 | 64;
     DWORD appearance = 0;
     DWORD bytes = sizeof(appearance);
     return RegGetValueW(HKEY_CURRENT_USER, AppearanceKey, AppearanceValue, RRF_RT_REG_DWORD,
-        nullptr, &appearance, &bytes) == ERROR_SUCCESS ? appearance & ~legacyPluginTheme : 0;
+        nullptr, &appearance, &bytes) == ERROR_SUCCESS ? appearance & ~legacyAppearance : 0;
 }
 
 inline bool UsesPluginTabs()

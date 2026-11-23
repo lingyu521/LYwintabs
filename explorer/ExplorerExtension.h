@@ -2,7 +2,7 @@
 
 #include <windows.h>
 
-inline constexpr wchar_t ExplorerVersion[] = L"0.1.0-preview.28";
+inline constexpr wchar_t ExplorerVersion[] = L"0.1.0-preview.35";
 inline constexpr wchar_t ExplorerClassId[] = L"{B5ABC93E-9B6E-4A71-8AAA-2DE01C5A918B}";
 inline constexpr wchar_t AttachMessageName[] = L"LYwintabs.Attach.{B5ABC93E-9B6E-4A71-8AAA-2DE01C5A918B}";
 inline constexpr wchar_t TransferRelativePath[] = L"Transfer\\LYwintabs.Transfer.exe";

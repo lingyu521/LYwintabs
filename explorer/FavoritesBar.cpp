@@ -10,7 +10,6 @@
 #include "WindowsTheme.h"
 
 #include <commctrl.h>
-#include <dwmapi.h>
 #include <ole2.h>
 #include <gdiplus.h>
 #include <exdisp.h>
@@ -26,6 +25,7 @@
 #include <winrt/Windows.UI.ViewManagement.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cwchar>
@@ -49,6 +49,7 @@ constexpr wchar_t LauncherName[] = L"LYwintabs.Launcher.exe";
 constexpr wchar_t ExplorerCommandKey[] = L"Software\\Classes\\Directory\\Background\\shell\\LYwintabs.FavoritesBar";
 constexpr UINT_PTR RefreshTimer = 1;
 constexpr UINT OpenHiddenSettings = WM_APP + 0x470;
+constexpr UINT RefreshViewLayout = WM_APP + 0x471;
 constexpr WORD AddCommand = 1;
 constexpr WORD MoreCommand = 2;
 constexpr WORD SettingsCommand = 3;
@@ -61,6 +62,11 @@ constexpr int BookmarkIconGap = 6;
 constexpr int BookmarkChevronSpace = 16;
 constexpr UINT LayoutFlags = SWP_NOACTIVATE | SWP_NOZORDER;
 enum FavoriteAction : UINT { Open = 1, Edit, Remove, OpenInTab };
+
+// Windows 10 replaces the entire file-view window when navigating. One hook per
+// Explorer UI thread lets each attached bar subclass its new view before it is shown.
+thread_local HHOOK viewCreationHook = nullptr;
+thread_local unsigned viewCreationUsers = 0;
 
 struct ExplorerSettings {
     DWORD appearance;
@@ -180,27 +186,6 @@ bool MoveTo(HWND window, const RECT& rect, HWND insertAfter = nullptr, UINT flag
 {
     return SetWindowPos(window, insertAfter, rect.left, rect.top, rect.right - rect.left,
         rect.bottom - rect.top, flags) != FALSE;
-}
-
-bool CaptionTabBounds(HWND root, UINT dpi, bool preserveNativeTitle, RECT& bounds)
-{
-    if (!IsWindowVisible(root) || IsIconic(root) ||
-        (GetWindowLongPtrW(root, GWL_EXSTYLE) & WS_EX_LAYOUTRTL) != 0) return false;
-    RECT window{};
-    RECT frame{};
-    RECT buttons{};
-    if (!GetWindowRect(root, &window) ||
-        FAILED(DwmGetWindowAttribute(root, DWMWA_EXTENDED_FRAME_BOUNDS, &frame, sizeof(frame))) ||
-        FAILED(DwmGetWindowAttribute(root, DWMWA_CAPTION_BUTTON_BOUNDS, &buttons, sizeof(buttons))) ||
-        IsRectEmpty(&frame) || IsRectEmpty(&buttons)) return false;
-    OffsetRect(&buttons, window.left, window.top);
-    const auto scale = [dpi](int dip) { return MulDiv(dip, dpi, 96); };
-    const LONG top = std::max(buttons.top, frame.top + scale(2));
-    const LONG bottom = std::min(buttons.bottom, top + scale(29));
-    const int leftPadding = preserveNativeTitle ? 270 : 6;
-    bounds = {frame.left + scale(leftPadding), top, buttons.left - scale(48), bottom};
-    return buttons.left > frame.left && buttons.right <= window.right &&
-        bounds.right - bounds.left >= scale(165) && bounds.bottom - bounds.top >= scale(19);
 }
 
 bool ExplorerProcess()
@@ -387,33 +372,6 @@ bool UsesDarkAppColors()
     }
 }
 
-CaptionColors NativeCaptionColors(bool dark, bool active)
-{
-    HIGHCONTRASTW contrast{sizeof(contrast)};
-    if (SystemParametersInfoW(SPI_GETHIGHCONTRAST, contrast.cbSize, &contrast, 0) &&
-        (contrast.dwFlags & HCF_HIGHCONTRASTON)) {
-        return {GetSysColor(active ? COLOR_ACTIVECAPTION : COLOR_INACTIVECAPTION),
-            GetSysColor(active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT)};
-    }
-
-    // DWM stores title-bar accent preferences as COLORREF values with a high byte.
-    const auto read = [](const wchar_t* name, DWORD& value) {
-        DWORD size = sizeof(value);
-        return RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM", name,
-            RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS;
-    };
-    DWORD enabled = 0;
-    DWORD accent = 0;
-    if (read(L"ColorPrevalence", enabled) && enabled == 1 &&
-        read(active ? L"AccentColor" : L"AccentColorInactive", accent)) {
-        const auto surface = static_cast<COLORREF>(accent & 0x00ffffff);
-        const int lightness = 2 * GetRValue(surface) + 5 * GetGValue(surface) + GetBValue(surface);
-        return {surface, lightness > 8 * 128 ? RGB(0, 0, 0) : RGB(255, 255, 255)};
-    }
-    if (dark) return {RGB(0, 0, 0), active ? RGB(247, 247, 247) : RGB(190, 190, 190)};
-    return {RGB(255, 255, 255), active ? RGB(32, 32, 32) : RGB(94, 94, 94)};
-}
-
 struct BookmarkPalette {
     COLORREF surface;
     COLORREF divider;
@@ -427,7 +385,7 @@ struct BookmarkPalette {
     bool highContrast = false;
 };
 
-BookmarkPalette BookmarkColors(bool dark)
+BookmarkPalette BookmarkColors(bool dark, bool topBars)
 {
     HIGHCONTRASTW contrast{sizeof(contrast)};
     if (SystemParametersInfoW(SPI_GETHIGHCONTRAST, contrast.cbSize, &contrast, 0) &&
@@ -436,6 +394,12 @@ BookmarkPalette BookmarkColors(bool dark)
         const COLORREF text = GetSysColor(COLOR_WINDOWTEXT);
         const COLORREF highlight = GetSysColor(COLOR_HIGHLIGHT);
         return {window, text, window, window, highlight, highlight, text, text, text, true};
+    }
+    if (topBars) {
+        if (dark) return {RGB(44, 47, 53), RGB(63, 68, 76), RGB(44, 47, 53), RGB(44, 47, 53),
+            RGB(57, 63, 72), RGB(67, 74, 85), RGB(224, 228, 235), RGB(178, 197, 224), RGB(186, 193, 204)};
+        return {RGB(252, 253, 255), RGB(218, 224, 232), RGB(252, 253, 255), RGB(252, 253, 255),
+            RGB(232, 239, 249), RGB(219, 230, 244), RGB(41, 50, 65), RGB(68, 93, 130), RGB(93, 108, 129)};
     }
     if (dark) return {RGB(58, 58, 58), RGB(77, 77, 77), RGB(58, 58, 58), RGB(68, 68, 68),
         RGB(78, 78, 78), RGB(88, 88, 88), RGB(224, 224, 224), RGB(201, 201, 201), RGB(201, 201, 201)};
@@ -601,7 +565,7 @@ INT_PTR CALLBACK AppearanceDialog(HWND dialog, UINT message, WPARAM wParam, LPAR
             ComboBox_SetCurSel(combo, (settings.appearance & compact) ? 0 : 1);
         }
         CheckDlgButton(dialog, IDC_SHOW_FOLDER_TITLE,
-            (settings.appearance & ShowFolderTitle) ? BST_CHECKED : BST_UNCHECKED);
+            (settings.appearance & HideFolderTitle) ? BST_UNCHECKED : BST_CHECKED);
         CheckDlgButton(dialog, IDC_HIDE_QUICK_ACCESS_TOOLBAR,
             settings.useTabs && !(settings.appearance & ShowQuickAccessToolbar) ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(dialog, IDC_SHOW_BOOKMARKS_BAR,
@@ -642,9 +606,9 @@ INT_PTR CALLBACK AppearanceDialog(HWND dialog, UINT message, WPARAM wParam, LPAR
     if (ComboBox_GetCurSel(GetDlgItem(dialog, IDC_FAVORITES_DENSITY)) == 0) settings.appearance |= CompactFavorites;
     if (IsDlgButtonChecked(dialog, IDC_SHOW_BOOKMARKS_BAR) != BST_CHECKED) settings.appearance |= HideBookmarks;
     if (settings.useTabs) {
-        settings.appearance &= ~(CompactTabs | ShowFolderTitle | ShowQuickAccessToolbar);
+        settings.appearance &= ~(CompactTabs | HideFolderTitle | ShowQuickAccessToolbar);
         if (ComboBox_GetCurSel(GetDlgItem(dialog, IDC_TAB_DENSITY)) == 0) settings.appearance |= CompactTabs;
-        if (IsDlgButtonChecked(dialog, IDC_SHOW_FOLDER_TITLE) == BST_CHECKED) settings.appearance |= ShowFolderTitle;
+        if (IsDlgButtonChecked(dialog, IDC_SHOW_FOLDER_TITLE) != BST_CHECKED) settings.appearance |= HideFolderTitle;
         if (IsDlgButtonChecked(dialog, IDC_HIDE_QUICK_ACCESS_TOOLBAR) != BST_CHECKED) settings.appearance |= ShowQuickAccessToolbar;
     }
     settings.startup = IsDlgButtonChecked(dialog, IDC_START_WITH_WINDOWS) == BST_CHECKED;
@@ -709,7 +673,7 @@ public:
     FavoritesBar(HWND root, bool useTabs) noexcept : root_(root), useTabs_(useTabs) {}
     ~FavoritesBar()
     {
-        if (bookmarkFont_) DeleteObject(bookmarkFont_);
+        if (barFont_) DeleteObject(barFont_);
         if (bookmarkGraphics_) Gdiplus::GdiplusShutdown(bookmarkGraphics_);
     }
 
@@ -731,7 +695,6 @@ public:
             hr = store_.Load(items_);
         }
         if (FAILED(hr)) return hr;
-        captionActive_ = GetForegroundWindow() == root_;
         const Gdiplus::GdiplusStartupInput graphics;
         if (Gdiplus::GdiplusStartup(&bookmarkGraphics_, &graphics, nullptr) != Gdiplus::Ok) bookmarkGraphics_ = 0;
         bar_ = CreateWindowExW(0, L"Static", L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
@@ -743,31 +706,22 @@ public:
         }
         AddRef(); // The bar window owns a reference until WM_NCDESTROY.
         if (!SetPropW(root_, BarProperty, bar_) || !SetTimer(bar_, RefreshTimer, 125, nullptr)) return E_FAIL;
-        const bool watchFrame = SetWindowSubclass(root_, FrameProc, 1, reinterpret_cast<DWORD_PTR>(this)) != FALSE;
-        if (useTabs_ && !CreateTabStrip(watchFrame)) return E_FAIL;
-        if (!useTabs_) settings_ = CreateButton(SettingsCommand, ExplorerText(L"设置"));
+        if (!SetWindowSubclass(root_, FrameProc, 1, reinterpret_cast<DWORD_PTR>(this))) return E_FAIL;
+        if (useTabs_ && !CreateTabStrip()) return E_FAIL;
         ApplyAppearance(ReadAppearance());
+        settings_ = CreateButton(SettingsCommand, ExplorerText(L"设置"));
+        addBookmark_ = CreateButton(AddCommand, ExplorerText(L"添加书签"));
         transfer_ = CreateButton(TransferCommand, ExplorerText(L"局域网互传"));
         more_ = CreateButton(MoreCommand, useTabs_ ? L"»" : ExplorerText(L"更多…"));
-        if (!settings_ || !more_ || !transfer_) return E_FAIL;
+        if (!settings_ || !addBookmark_ || !more_ || !transfer_) return E_FAIL;
         tooltip_ = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP,
             0, 0, 0, 0, bar_, nullptr, nullptr, nullptr);
-        if (tooltip_) {
-            TOOLINFOW tool{sizeof(tool)};
-            tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
-            tool.hwnd = bar_;
-            tool.uId = reinterpret_cast<UINT_PTR>(transfer_);
-            tool.lpszText = const_cast<wchar_t*>(ExplorerText(L"局域网互传"));
-            SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
-            if (!useTabs_) {
-                tool.uId = reinterpret_cast<UINT_PTR>(settings_);
-                tool.lpszText = const_cast<wchar_t*>(ExplorerText(L"设置"));
-                SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
-            }
-        }
+        UpdateUtilityLabels(TTM_ADDTOOLW);
         Refresh();
-        if (applied_ && !watchedFolder_) OpenTransfer(true);
-        return applied_ ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+        const bool laidOut = topBandsHeight_ || viewSlot_.applied;
+        if (laidOut && useTabs_) WatchViewCreation();
+        if (laidOut && !watchedFolder_) OpenTransfer(true);
+        return laidOut ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
     }
 
     void Close() { if (bar_) DestroyWindow(bar_); }
@@ -780,27 +734,20 @@ private:
         if (detaching_ || !IsWindowEnabled(root_) ||
             (GetGUIThreadInfo(GetCurrentThreadId(), &gui) && (gui.flags & busy))) return false;
         detaching_ = true;
-        if (quickAccess_.Restore() && SetNativeCaptionHidden(false) && DestroyWindow(bar_)) return true;
+        if (quickAccess_.Restore() && SetNativeCaptionHidden(false) && RestoreTopBands() && DestroyWindow(bar_)) return true;
         detaching_ = false;
         return false;
     }
 
-    bool CreateTabStrip(bool watchFrame)
+    bool CreateTabStrip()
     {
         tabHost_ = CreateWindowExW(0, L"Static", L"", WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             0, 0, 0, 0, bar_, nullptr, nullptr, nullptr);
         if (!tabHost_ || !SetWindowSubclass(tabHost_, TabsProc, 1, reinterpret_cast<DWORD_PTR>(this)) ||
             !tabs_.Initialize(tabHost_, root_, dark_)) return false;
-        settings_ = CreateWindowExW(0, L"Button", ExplorerText(L"设置"), WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+        tabSettings_ = CreateWindowExW(0, L"Button", ExplorerText(L"设置"), WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
             0, 0, 0, 0, tabHost_, nullptr, nullptr, nullptr);
-        if (!settings_) return false;
-        if (!watchFrame) return true;
-        caption_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"Static", L"",
-            WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 0, root_, nullptr, nullptr, nullptr);
-        if (caption_ && !SetWindowSubclass(caption_, CaptionProc, 1, reinterpret_cast<DWORD_PTR>(this))) {
-            DestroyWindow(std::exchange(caption_, nullptr));
-        }
-        return true;
+        return tabSettings_ != nullptr;
     }
 
     static LRESULT CALLBACK FrameProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
@@ -809,49 +756,15 @@ private:
         const ComPtr<FavoritesBar> bar(reinterpret_cast<FavoritesBar*>(context));
         if (message == WM_NCDESTROY) RemoveWindowSubclass(window, FrameProc, 1);
         const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
-        if (message == WM_NCACTIVATE) {
-            bar->captionActive_ = wParam != FALSE;
-            bar->UpdateTabColors();
-        } else if (message == WM_THEMECHANGED || message == WM_SETTINGCHANGE || message == WM_SYSCOLORCHANGE ||
+        if (message == WM_THEMECHANGED || message == WM_SETTINGCHANGE || message == WM_SYSCOLORCHANGE ||
             message == WM_DWMCOLORIZATIONCOLORCHANGED) {
             bar->RefreshWindowsColors();
         }
         if ((message == WM_WINDOWPOSCHANGED || message == WM_SHOWWINDOW || message == WM_DPICHANGED) &&
-            bar->caption_ && IsWindowVisible(bar->caption_)) {
-            RECT bounds{};
-            if (!CaptionTabBounds(window, GetDpiForWindow(window), !bar->captionHidden_, bounds) ||
-                !bar->PositionCaption(bounds)) {
-                ShowWindow(bar->caption_, SW_HIDE);
-                bar->SetNativeCaptionHidden(false);
-            }
+            bar->useTabs_ && !bar->detaching_) {
+            bar->QueueLayout();
         }
         return result;
-    }
-
-    static LRESULT CALLBACK CaptionProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
-        UINT_PTR, DWORD_PTR context)
-    {
-        const ComPtr<FavoritesBar> bar(reinterpret_cast<FavoritesBar*>(context));
-        if (message == WM_NCDESTROY) {
-            if (bar->caption_ == window) bar->caption_ = nullptr;
-            RemoveWindowSubclass(window, CaptionProc, 1);
-        }
-        if (message == WM_MOUSEACTIVATE) {
-            // The Explorer frame owns keyboard focus and the caption only hosts the tab controls.
-            SetForegroundWindow(bar->root_);
-            return MA_NOACTIVATE;
-        }
-        if (message == WM_NCHITTEST) return bar->TabControlAt(lParam) ? HTCLIENT : HTTRANSPARENT;
-        return DefSubclassProc(window, message, wParam, lParam);
-    }
-
-    bool TabControlAt(LPARAM point) const
-    {
-        if (!tabHost_) return false;
-        POINT local{GET_X_LPARAM(point), GET_Y_LPARAM(point)};
-        ScreenToClient(tabHost_, &local);
-        const HWND control = ChildWindowFromPointEx(tabHost_, local, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED);
-        return control && control != tabHost_;
     }
 
     void ApplyAppearance(DWORD appearance)
@@ -861,37 +774,40 @@ private:
             nextQuickAccessAttempt_ = 0;
         }
         appearance_ = appearance;
-        tabs_.SetLayoutOptions(SettingsInset, TabTopPadding());
+        tabs_.SetLayoutOptions((appearance_ & HideBookmarks) ? SettingsInset : 0, TabTopPadding());
         tabsHeight_ = 0;
         buttonsDirty_ = true;
     }
 
-    void ApplyLanguage()
+    void UpdateUtilityLabels(UINT tooltipMessage)
     {
         const UiLanguage language = ReadUiLanguage();
-        const auto settings = ExplorerText(L"设置", language);
-        const auto transfer = ExplorerText(L"局域网互传", language);
-        if (settings_) SetWindowTextW(settings_, settings);
-        if (transfer_) SetWindowTextW(transfer_, transfer);
-        if (more_ && !useTabs_) SetWindowTextW(more_, ExplorerText(L"更多…", language));
-        addressStar_.UpdateLanguage();
-        if (tooltip_) {
+        const std::pair<HWND, const wchar_t*> commands[] = {
+            {transfer_, L"局域网互传"}, {settings_, L"设置"}, {addBookmark_, L"添加书签"}, {tabSettings_, L"设置"},
+        };
+        for (const auto& [button, key] : commands) {
+            if (!button) continue;
+            const auto label = ExplorerText(key, language);
+            SetWindowTextW(button, label);
+            if (!tooltip_) continue;
             TOOLINFOW tool{sizeof(tool)};
-            tool.uFlags = TTF_IDISHWND;
-            tool.hwnd = bar_;
-            tool.uId = reinterpret_cast<UINT_PTR>(transfer_);
-            tool.lpszText = const_cast<wchar_t*>(transfer);
-            SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
-            if (!useTabs_) {
-                tool.uId = reinterpret_cast<UINT_PTR>(settings_);
-                tool.lpszText = const_cast<wchar_t*>(settings);
-                SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
-            }
+            tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            tool.hwnd = GetParent(button);
+            tool.uId = reinterpret_cast<UINT_PTR>(button);
+            tool.lpszText = const_cast<wchar_t*>(label);
+            SendMessageW(tooltip_, tooltipMessage, 0, reinterpret_cast<LPARAM>(&tool));
         }
+    }
+
+    void ApplyLanguage()
+    {
+        UpdateUtilityLabels(TTM_UPDATETIPTEXTW);
+        if (more_ && !useTabs_) SetWindowTextW(more_, ExplorerText(L"更多…"));
+        addressStar_.UpdateLanguage();
         buttonsDirty_ = true;
     }
 
-    int TabTopPadding() const { return (appearance_ & CompactTabs) ? 9 : 1; }
+    int TabTopPadding() const { return (appearance_ & CompactTabs) ? 3 : 5; }
 
     bool SetNativeCaptionHidden(bool hidden)
     {
@@ -928,9 +844,11 @@ private:
         FillRect(item.hDC, &bounds, brush);
         const COLORREF color = pressed && palette.highContrast ? GetSysColor(COLOR_HIGHLIGHTTEXT) : palette.text;
         if (!bookmarkGraphics_ || !DrawExplorerIcon(item.hDC, bounds, Scale(18), ExplorerIcon::Settings, color)) {
+            const auto previousFont = SelectObject(item.hDC, BarFont());
             SetBkMode(item.hDC, TRANSPARENT);
             SetTextColor(item.hDC, color);
             DrawTextW(item.hDC, ExplorerText(L"设置"), -1, &bounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            if (previousFont) SelectObject(item.hDC, previousFont);
         }
         if ((item.itemState & ODS_FOCUS) && !(item.itemState & ODS_NOFOCUSRECT)) {
             InflateRect(&bounds, -Scale(1), -Scale(1));
@@ -942,14 +860,23 @@ private:
     {
         PAINTSTRUCT paint{};
         const HDC dc = BeginPaint(window, &paint);
-        const auto palette = BookmarkColors(dark_);
+        const auto palette = BookmarkColors(dark_, useTabs_);
         const auto brush = reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH));
         const COLORREF surface = bookmarkBar ? palette.surface : tabs_.Colors().surface;
         SetDCBrushColor(dc, surface);
         FillRect(dc, &paint.rcPaint, brush);
+        if (!bookmarkBar) tabs_.DrawActiveTabCorners(dc);
         if (bookmarkBar && !(appearance_ & HideBookmarks)) {
             RECT divider{};
             GetClientRect(window, &divider);
+            const int inset = Scale((appearance_ & CompactFavorites) ? 6 : 10);
+            if (bookmarkDividerX_ > 0 && divider.bottom - buttonsTop_ > 2 * inset) {
+                const RECT separator{bookmarkDividerX_, buttonsTop_ + inset,
+                    bookmarkDividerX_ + Scale(1), divider.bottom - inset};
+                SetDCBrushColor(dc, palette.highContrast ? palette.text :
+                    dark_ ? RGB(78, 84, 96) : RGB(187, 197, 210));
+                FillRect(dc, &separator, brush);
+            }
             divider.top = divider.bottom - Scale(1);
             SetDCBrushColor(dc, palette.divider);
             FillRect(dc, &divider, brush);
@@ -964,7 +891,7 @@ private:
         if (message == WM_NCDESTROY) {
             if (bar->tabHost_ == window) {
                 bar->tabHost_ = nullptr;
-                bar->settings_ = nullptr;
+                bar->tabSettings_ = nullptr;
             }
             RemoveWindowSubclass(window, TabsProc, 1);
         }
@@ -976,7 +903,7 @@ private:
             }
             if (message == WM_DRAWITEM && lParam) {
                 const auto& item = *reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
-                if (item.hwndItem == bar->settings_) {
+                if (item.hwndItem == bar->tabSettings_) {
                     bar->PaintSettings(item);
                     return TRUE;
                 }
@@ -984,7 +911,7 @@ private:
             }
             if (message == WM_COMMAND && HIWORD(wParam) == BN_CLICKED && lParam) {
                 const HWND control = reinterpret_cast<HWND>(lParam);
-                if (control == bar->settings_) {
+                if (control == bar->tabSettings_) {
                     bar->OpenSettings();
                     return 0;
                 }
@@ -1005,6 +932,7 @@ private:
         if (message == WM_NCDESTROY) {
             bar->detaching_ = true;
             KillTimer(window, RefreshTimer);
+            bar->StopWatchingViewCreation();
             bar->FinishBookmarkDrag(false);
             if (GetPropW(bar->root_, BarProperty) == window) RemovePropW(bar->root_, BarProperty);
             RemoveWindowSubclass(bar->root_, FrameProc, 1);
@@ -1012,8 +940,9 @@ private:
             bar->addressStar_.Close();
             bar->quickAccess_.Restore();
             bar->bar_ = nullptr;
-            if (const HWND caption = std::exchange(bar->caption_, nullptr)) DestroyWindow(caption);
+            bar->RestoreTopBands();
             bar->DetachView();
+            bar->DetachPendingView();
             RemoveWindowSubclass(window, BarProc, 1);
             const auto result = DefSubclassProc(window, message, wParam, lParam);
             bar->Release();
@@ -1034,7 +963,8 @@ private:
                     return TRUE;
                 }
             }
-            if (message == WM_TIMER && wParam == RefreshTimer) {
+            if ((message == WM_TIMER && wParam == RefreshTimer) || message == RefreshViewLayout) {
+                if (message == RefreshViewLayout) bar->layoutQueued_ = false;
                 bar->Refresh();
                 return 0;
             }
@@ -1086,19 +1016,125 @@ private:
         return DefSubclassProc(window, message, wParam, lParam);
     }
 
+    struct ViewSlot {
+        RECT native{};
+        RECT reserved{};
+        bool applied = false;
+    };
+
+    static LRESULT CALLBACK ViewCreationProc(int code, WPARAM wParam, LPARAM lParam)
+    {
+        if (code == HC_ACTION && lParam) {
+            const auto& message = *reinterpret_cast<const CWPSTRUCT*>(lParam);
+            if (message.message == WM_CREATE && ClassIs(message.hwnd, L"SHELLDLL_DefView")) {
+                const HWND root = GetAncestor(message.hwnd, GA_ROOT);
+                const HWND bar = static_cast<HWND>(GetPropW(root, BarProperty));
+                DWORD_PTR context = 0;
+                if (bar && GetWindowSubclass(bar, BarProc, 1, &context)) {
+                    const ComPtr<FavoritesBar> owner(reinterpret_cast<FavoritesBar*>(context));
+                    owner->WatchNewView(message.hwnd);
+                }
+            }
+        }
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    void WatchViewCreation()
+    {
+        if (!viewCreationHook)
+            viewCreationHook = SetWindowsHookExW(WH_CALLWNDPROC, ViewCreationProc, nullptr, GetCurrentThreadId());
+        if (viewCreationHook) {
+            ++viewCreationUsers;
+            watchingViewCreation_ = true;
+        }
+    }
+
+    void StopWatchingViewCreation()
+    {
+        if (std::exchange(watchingViewCreation_, false) && --viewCreationUsers == 0)
+            UnhookWindowsHookEx(std::exchange(viewCreationHook, nullptr));
+    }
+
     static LRESULT CALLBACK ViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
         UINT_PTR, DWORD_PTR context)
     {
+        if (message != WM_NCDESTROY && message != WM_WINDOWPOSCHANGING && message != WM_WINDOWPOSCHANGED)
+            return DefSubclassProc(window, message, wParam, lParam);
+        const ComPtr<FavoritesBar> bar(reinterpret_cast<FavoritesBar*>(context));
         if (message == WM_NCDESTROY) {
-            auto* bar = reinterpret_cast<FavoritesBar*>(context);
             if (bar->view_ == window) {
                 bar->view_ = nullptr;
-                bar->applied_ = false;
+                bar->viewSlot_ = {};
                 bar->tabs_.SetBrowser(nullptr);
+            }
+            if (bar->pendingView_ == window) {
+                bar->pendingView_ = nullptr;
+                bar->pendingSlot_ = {};
             }
             RemoveWindowSubclass(window, ViewProc, 1);
         }
-        return DefSubclassProc(window, message, wParam, lParam);
+        const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
+        if (bar->useTabs_ && !bar->detaching_) {
+            if (message == WM_WINDOWPOSCHANGING && lParam)
+                bar->ReserveBeforePlacement(window, *reinterpret_cast<WINDOWPOS*>(lParam));
+            if (message == WM_WINDOWPOSCHANGED && lParam) {
+                const auto flags = reinterpret_cast<const WINDOWPOS*>(lParam)->flags;
+                if ((flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW)) ||
+                    (flags & (SWP_NOMOVE | SWP_NOSIZE)) != (SWP_NOMOVE | SWP_NOSIZE))
+                    bar->QueueLayout();
+            }
+        }
+        return result;
+    }
+
+    void WatchNewView(HWND window)
+    {
+        if (!useTabs_ || !bar_ || detaching_ || !reservedHeight_ || window == view_ || window == pendingView_ ||
+            !ClassIs(window, L"SHELLDLL_DefView") || GetAncestor(window, GA_ROOT) != root_ ||
+            GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId()) return;
+        DetachPendingView();
+        if (SetWindowSubclass(window, ViewProc, 1, reinterpret_cast<DWORD_PTR>(this))) pendingView_ = window;
+    }
+
+    void QueueLayout()
+    {
+        if (bar_ && !layoutQueued_) layoutQueued_ = PostMessageW(bar_, RefreshViewLayout, 0, 0) != FALSE;
+    }
+
+    void ReserveBeforePlacement(HWND window, WINDOWPOS& position)
+    {
+        if (!reservedHeight_ || (position.flags & SWP_HIDEWINDOW)) return;
+        auto* slot = window == view_ ? &viewSlot_ : (window == pendingView_ ? &pendingSlot_ : nullptr);
+        if (!slot) return;
+        const bool moves = !(position.flags & SWP_NOMOVE);
+        const bool sizes = !(position.flags & SWP_NOSIZE);
+        if (!moves && !sizes && slot->applied) return;
+
+        const RECT current = RectIn(window, GetParent(window));
+        const LONG x = moves ? position.x : current.left;
+        const LONG y = moves ? position.y : current.top;
+        const LONG width = sizes ? position.cx : current.right - current.left;
+        const LONG viewHeight = sizes ? position.cy : current.bottom - current.top;
+        // Keep the Explorer slot separate from the already-inset view to avoid applying the row twice.
+        const LONG top = slot->applied && y == slot->reserved.top ? slot->native.top : y;
+        const LONG bottom = sizes ? y + viewHeight :
+            top + (slot->applied ? slot->native.bottom - slot->native.top : viewHeight);
+        const RECT native{x, top, x + width, bottom};
+        if (!CanReserve(native, reservedHeight_)) return;
+
+        RECT reserved = native;
+        reserved.top += reservedHeight_;
+        if (reserved.top != y) {
+            position.x = x;
+            position.y = reserved.top;
+            position.flags &= ~SWP_NOMOVE;
+        }
+        if (reserved.bottom - reserved.top != viewHeight) {
+            position.cx = width;
+            position.cy = reserved.bottom - reserved.top;
+            position.flags &= ~SWP_NOSIZE;
+        }
+        *slot = {native, reserved, true};
     }
 
     void DetachView()
@@ -1108,13 +1144,23 @@ private:
         if (!view) return;
         tabs_.SetBrowser(nullptr);
         RemoveWindowSubclass(view, ViewProc, 1);
-        RestoreViewSize(view);
+        RestoreViewSize(view, viewSlot_);
     }
 
-    void RestoreViewSize(HWND view)
+    void DetachPendingView()
     {
+        const HWND view = std::exchange(pendingView_, nullptr);
+        if (!view) return;
+        RemoveWindowSubclass(view, ViewProc, 1);
+        RestoreViewSize(view, pendingSlot_);
+    }
+
+    static void RestoreViewSize(HWND view, ViewSlot& slot)
+    {
+        const auto previous = std::exchange(slot, {});
+        if (!previous.applied) return;
         const RECT current = RectIn(view, GetParent(view));
-        if (std::exchange(applied_, false) && EqualRect(&current, &adjusted_)) MoveTo(view, slot_);
+        if (EqualRect(&current, &previous.reserved)) MoveTo(view, previous.native);
     }
 
     int Scale(int dip) const { return MulDiv(dip, dpi_, 96); }
@@ -1132,9 +1178,162 @@ private:
         OpenTransfer(true);
     }
 
+    struct NativeBand {
+        HWND window = nullptr;
+        LONG placedTop = 0;
+        int inset = 0;
+    };
+
+    static LRESULT CALLBACK NativeBandProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
+        UINT_PTR index, DWORD_PTR context)
+    {
+        if (message != WM_NCDESTROY && message != WM_WINDOWPOSCHANGING && message != WM_WINDOWPOSCHANGED)
+            return DefSubclassProc(window, message, wParam, lParam);
+        const ComPtr<FavoritesBar> bar(reinterpret_cast<FavoritesBar*>(context));
+        auto& band = bar->topBands_[index];
+        if (message == WM_NCDESTROY) {
+            band = {};
+            RemoveWindowSubclass(window, NativeBandProc, index);
+            bar->QueueLayout();
+        }
+        const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
+        if (!bar->topBandsHeight_ || bar->movingTopBands_ || bar->detaching_ || band.window != window) return result;
+        if (message == WM_WINDOWPOSCHANGING && lParam) {
+            auto& position = *reinterpret_cast<WINDOWPOS*>(lParam);
+            if (!(position.flags & (SWP_NOMOVE | SWP_HIDEWINDOW))) {
+                if (index == 0 && position.y != band.placedTop) bar->nativeRibbonTop_ = position.y;
+                if (const auto top = bar->NativeBandTop(index)) {
+                    position.y = *top + bar->topBandsHeight_;
+                    band.placedTop = position.y;
+                    band.inset = bar->topBandsHeight_;
+                }
+                if (index == 2 && !(position.flags & SWP_NOSIZE)) {
+                    RECT client{};
+                    GetClientRect(bar->root_, &client);
+                    position.cy = std::max<LONG>(0, client.bottom + bar->nativeBodyBottomGap_ - position.y);
+                }
+            }
+        }
+        if (message == WM_WINDOWPOSCHANGED) bar->QueueLayout();
+        return result;
+    }
+
+    std::optional<LONG> NativeBandTop(size_t index) const
+    {
+        LONG top = nativeRibbonTop_;
+        for (size_t previous = 0; previous < index; ++previous) {
+            if (!topBands_[previous].window) return std::nullopt;
+            const RECT rect = RectIn(topBands_[previous].window, root_);
+            top += rect.bottom - rect.top;
+        }
+        return top;
+    }
+
+    bool FindTopBands()
+    {
+        HWND ribbon = nullptr;
+        while ((ribbon = FindWindowExW(root_, ribbon, L"UIRibbonCommandBarDock", nullptr))) {
+            const RECT rect = RectIn(ribbon, root_);
+            // Explorer also creates collapsed docks along the other sides of the window.
+            if ((GetWindowLongPtrW(ribbon, GWL_STYLE) & WS_VISIBLE) && !IsRectEmpty(&rect)) break;
+        }
+        HWND address = nullptr;
+        while ((address = FindWindowExW(root_, address, L"WorkerW", nullptr)) &&
+            (!(GetWindowLongPtrW(address, GWL_STYLE) & WS_VISIBLE) ||
+                !FindWindowExW(address, nullptr, L"ReBarWindow32", nullptr))) {}
+        const HWND body = FindWindowExW(root_, nullptr, L"ShellTabWindowClass", nullptr);
+        const std::array windows{ribbon, address, body};
+        if (windows[0] && windows[1] && windows[2] && windows[0] == topBands_[0].window &&
+            windows[1] == topBands_[1].window && windows[2] == topBands_[2].window) return true;
+        if (!RestoreTopBands() || !ribbon || !address || !body) return false;
+
+        const RECT ribbonRect = RectIn(ribbon, root_);
+        const RECT addressRect = RectIn(address, root_);
+        const RECT bodyRect = RectIn(body, root_);
+        if (IsRectEmpty(&ribbonRect) || ribbonRect.bottom != addressRect.top ||
+            addressRect.bottom != bodyRect.top || IsRectEmpty(&bodyRect)) return false;
+        RECT client{};
+        if (!GetClientRect(root_, &client)) return false;
+        nativeRibbonTop_ = ribbonRect.top;
+        nativeBodyBottomGap_ = bodyRect.bottom - client.bottom;
+        for (size_t index = 0; index < windows.size(); ++index) {
+            if (!SetWindowSubclass(windows[index], NativeBandProc, index, reinterpret_cast<DWORD_PTR>(this))) {
+                RestoreTopBands();
+                return false;
+            }
+            topBands_[index].window = windows[index];
+        }
+        return true;
+    }
+
+    bool PositionTopBands(int height, int tabsHeight, RECT& bounds)
+    {
+        if (!FindTopBands()) return false;
+        RECT client{};
+        if (!GetClientRect(root_, &client)) return false;
+        const RECT ribbon = RectIn(topBands_[0].window, root_);
+        bounds = {ribbon.left, nativeRibbonTop_, ribbon.right, nativeRibbonTop_ + height};
+        const auto bodyTop = NativeBandTop(2);
+        const LONG bodyBottom = client.bottom + nativeBodyBottomGap_;
+        if (!bodyTop || bounds.right - bounds.left < Scale(160) || bodyBottom - *bodyTop < height + Scale(52) ||
+            !LayoutTabStrip(bounds.right - bounds.left, tabsHeight)) return false;
+
+        LONG top = bounds.bottom;
+        std::array<RECT, 3> desired{};
+        for (size_t index = 0; index < topBands_.size(); ++index) {
+            const RECT current = RectIn(topBands_[index].window, root_);
+            const LONG bottom = index == 2 ? bodyBottom : top + current.bottom - current.top;
+            desired[index] = {current.left, top, current.right, bottom};
+            top = bottom;
+        }
+        movingTopBands_ = true;
+        // Open space from the bottom upward before showing the new bars.
+        for (size_t count = topBands_.size(); count > 0; --count) {
+            const size_t index = count - 1;
+            auto& band = topBands_[index];
+            const RECT current = RectIn(band.window, root_);
+            if (!EqualRect(&current, &desired[index]) &&
+                !MoveTo(band.window, desired[index], nullptr, LayoutFlags | SWP_NOSENDCHANGING)) {
+                movingTopBands_ = false;
+                return false;
+            }
+            band.placedTop = desired[index].top;
+            band.inset = height;
+        }
+        movingTopBands_ = false;
+        topBandsHeight_ = height;
+        return true;
+    }
+
+    bool RestoreTopBands()
+    {
+        movingTopBands_ = true;
+        bool restored = true;
+        for (size_t index = 0; index < topBands_.size(); ++index) {
+            auto& band = topBands_[index];
+            if (!band.window) continue;
+            RECT rect = RectIn(band.window, root_);
+            if (band.inset && rect.top == band.placedTop) {
+                rect.top -= band.inset;
+                if (index != 2) rect.bottom -= band.inset;
+                restored = MoveTo(band.window, rect, nullptr, LayoutFlags | SWP_NOSENDCHANGING) && restored;
+            }
+            RemoveWindowSubclass(band.window, NativeBandProc, index);
+            band = {};
+        }
+        movingTopBands_ = false;
+        topBandsHeight_ = 0;
+        return restored;
+    }
+
     void Refresh()
     {
-        if (detaching_) return;
+        if (detaching_ || refreshing_) return;
+        refreshing_ = true;
+        struct ResetRefreshing {
+            bool& flag;
+            ~ResetRefreshing() { flag = false; }
+        } resetRefreshing{refreshing_};
         if (GetAncestor(root_, GA_ROOT) != root_) {
             Close();
             return;
@@ -1144,13 +1343,16 @@ private:
             DetachView();
             if (active && SetWindowSubclass(active, ViewProc, 1, reinterpret_cast<DWORD_PTR>(this))) {
                 view_ = active;
-                slot_ = RectIn(view_, GetParent(view_));
+                if (active == pendingView_) {
+                    pendingView_ = nullptr;
+                    viewSlot_ = std::exchange(pendingSlot_, {});
+                }
             }
         }
         if (!view_ || !bar_) {
+            if ((pendingView_ || topBandsHeight_) && bar_ && !IsIconic(root_)) return;
             FinishBookmarkDrag(false);
             addressStar_.Close();
-            if (caption_ && IsWindowVisible(caption_)) ShowWindow(caption_, SW_HIDE);
             if (bar_ && IsWindowVisible(bar_)) ShowWindow(bar_, SW_HIDE);
             SetNativeCaptionHidden(false);
             return;
@@ -1162,20 +1364,31 @@ private:
             dpi_ = dpi;
             buttonsDirty_ = true;
         }
-        addressStar_.Refresh(root_, bar_, AddCommand, dark_, bookmarkGraphics_ != 0);
-        const bool inCaption = PlaceCaption();
-        if (!inCaption && caption_ && IsWindowVisible(caption_)) ShowWindow(caption_, SW_HIDE);
-        if (!inCaption) SetNativeCaptionHidden(false);
-        const int inlineTabsHeight = useTabs_ && !inCaption ? Scale((appearance_ & CompactTabs) ? 27 : 37) : 0;
+        UpdateBarFont();
         const int favoritesHeight = (appearance_ & HideBookmarks) ? 0 :
             ((appearance_ & CompactFavorites) ? 26 : 42);
-        const int height = inlineTabsHeight + Scale(favoritesHeight);
+        int inlineTabsHeight = useTabs_ ? Scale((appearance_ & CompactTabs) ? 27 : 37) : 0;
+        int height = inlineTabsHeight + Scale(favoritesHeight);
         RECT bounds{};
-        if (!ReserveViewSlot(height, bounds)) {
-            if (inCaption) ShowWindow(caption_, SW_HIDE);
-            SetNativeCaptionHidden(false);
-            return;
+        if (!bar_ || !view_) return;
+        if (useTabs_) SetNativeCaptionHidden((appearance_ & HideFolderTitle) != 0);
+        const bool topBands = useTabs_ && PositionTopBands(height, inlineTabsHeight, bounds);
+        if (topBands) {
+            reservedHeight_ = 0;
+            RestoreViewSize(view_, viewSlot_);
+            DetachPendingView();
+        } else {
+            if (useTabs_) RestoreTopBands();
+            const RECT view = RectIn(view_, GetParent(view_));
+            if (inlineTabsHeight && !LayoutTabStrip(view.right - view.left, inlineTabsHeight)) {
+                height -= inlineTabsHeight;
+                inlineTabsHeight = 0;
+                if (tabHost_) ShowWindow(tabHost_, SW_HIDE);
+            }
+            if (!ReserveViewSlot(height, bounds)) return;
         }
+        addressStar_.Refresh(root_, bar_, AddCommand, dark_, bookmarkGraphics_ != 0);
+        const int width = bounds.right - bounds.left;
         const RECT old = RectIn(bar_, root_);
         // Native tab activation can raise a new child even with identical bounds.
         if (!height) {
@@ -1183,8 +1396,6 @@ private:
         } else if (!IsWindowVisible(bar_) || !EqualRect(&old, &bounds) || GetTopWindow(root_) != bar_) {
             MoveTo(bar_, bounds, HWND_TOP, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         }
-        const int width = bounds.right - bounds.left;
-        if (inlineTabsHeight) LayoutTabStrip(bar_, width, inlineTabsHeight);
         if (buttonsDirty_ || width != buttonsWidth_ || inlineTabsHeight != buttonsTop_) {
             if (favoritesHeight) {
                 LayoutButtons(width, inlineTabsHeight, height);
@@ -1192,12 +1403,15 @@ private:
                 FinishBookmarkDrag(false);
                 ShowWindow(more_, SW_HIDE);
                 ShowWindow(transfer_, SW_HIDE);
-                if (!useTabs_) ShowWindow(settings_, SW_HIDE);
+                ShowWindow(settings_, SW_HIDE);
+                ShowWindow(addBookmark_, SW_HIDE);
+                bookmarkDividerX_ = 0;
                 for (const HWND button : buttons_) ShowWindow(button, SW_HIDE);
             }
             buttonsWidth_ = width;
             buttonsTop_ = inlineTabsHeight;
             buttonsDirty_ = false;
+            InvalidateRect(bar_, nullptr, FALSE);
         }
         if (useTabs_) {
             const ULONGLONG now = GetTickCount64();
@@ -1217,39 +1431,22 @@ private:
         }
     }
 
-    bool PlaceCaption()
+    bool LayoutTabStrip(int width, int height)
     {
-        if (!caption_) return false;
-        RECT bounds{};
-        const bool showNativeTitle = (appearance_ & ShowFolderTitle) != 0;
-        if (!CaptionTabBounds(root_, dpi_, showNativeTitle, bounds)) return false;
-        if (!SetNativeCaptionHidden(!showNativeTitle) && !CaptionTabBounds(root_, dpi_, true, bounds)) return false;
-        return LayoutTabStrip(caption_, bounds.right - bounds.left, bounds.bottom - bounds.top) && PositionCaption(bounds);
-    }
-
-    bool PositionCaption(const RECT& bounds)
-    {
-        RECT current{};
-        return (GetWindowRect(caption_, &current) && EqualRect(&current, &bounds) && IsWindowVisible(caption_)) ||
-            MoveTo(caption_, bounds, nullptr, LayoutFlags | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-    }
-
-    bool LayoutTabStrip(HWND host, int width, int height)
-    {
-        if (!tabHost_) return false;
-        if (GetParent(tabHost_) != host) {
-            if (!SetParent(tabHost_, host)) return false;
-            UpdateTabColors();
-        }
+        if (!tabHost_ || width <= 0 || height <= 0) return false;
         const RECT bounds{0, 0, width, height};
-        const RECT current = RectIn(tabHost_, host);
-        if (!IsWindowVisible(tabHost_) || !EqualRect(&current, &bounds)) {
+        const RECT current = RectIn(tabHost_, bar_);
+        if (!(GetWindowLongPtrW(tabHost_, GWL_STYLE) & WS_VISIBLE) || !EqualRect(&current, &bounds)) {
             if (!MoveTo(tabHost_, bounds, nullptr, LayoutFlags | SWP_SHOWWINDOW)) return false;
         }
         if (tabsWidth_ != width || tabsHeight_ != height || tabsDpi_ != dpi_) {
-            const int settingsTop = std::min(Scale(TabTopPadding()), std::max(0, height - Scale(17)));
-            MoveTo(settings_, {Scale(3), settingsTop, Scale(SettingsInset - 2), height},
-                nullptr, LayoutFlags | SWP_SHOWWINDOW);
+            if (appearance_ & HideBookmarks) {
+                const int settingsTop = std::min(Scale(TabTopPadding()), std::max(0, height - Scale(17)));
+                MoveTo(tabSettings_, {Scale(3), settingsTop, Scale(SettingsInset - 2), height},
+                    nullptr, LayoutFlags | SWP_SHOWWINDOW);
+            } else {
+                ShowWindow(tabSettings_, SW_HIDE);
+            }
             tabs_.Layout(width, height, dpi_);
             tabsWidth_ = width;
             tabsHeight_ = height;
@@ -1258,50 +1455,51 @@ private:
         return true;
     }
 
-    void UpdateTabColors()
-    {
-        std::optional<CaptionColors> caption;
-        if (tabHost_ && caption_ && GetParent(tabHost_) == caption_) {
-            caption = NativeCaptionColors(dark_, captionActive_);
-        }
-        tabs_.SetColors(dark_, caption);
-    }
-
     void RefreshWindowsColors()
     {
         const WinRtApartment apartment;
         if (SUCCEEDED(apartment.hr)) dark_ = UsesDarkAppColors();
-        UpdateTabColors();
+        tabs_.SetColors(dark_);
         if (bar_) RedrawWindow(bar_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
-        if (caption_) RedrawWindow(caption_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
+    }
+
+    bool CanReserve(const RECT& slot, int height) const
+    {
+        return slot.bottom - slot.top >= height * 2 && slot.right - slot.left >= Scale(160);
     }
 
     bool ReserveViewSlot(int height, RECT& bounds)
     {
         const HWND parent = GetParent(view_);
         const RECT current = RectIn(view_, parent);
-        if (!applied_) {
-            slot_ = current;
-        } else if (!EqualRect(&current, &adjusted_)) {
+        auto& slot = viewSlot_;
+        if (!slot.applied) {
+            slot.native = current;
+        } else if (!EqualRect(&current, &slot.reserved)) {
             // Explorer can resize the view without moving its top edge.
-            const LONG top = current.top == adjusted_.top ? slot_.top : current.top;
-            slot_ = current;
-            slot_.top = top;
+            const LONG top = current.top == slot.reserved.top ? slot.native.top : current.top;
+            slot.native = current;
+            slot.native.top = top;
         }
 
-        if (slot_.bottom - slot_.top < height * 2 || slot_.right - slot_.left < Scale(160)) {
+        if (!CanReserve(slot.native, height)) {
+            reservedHeight_ = 0;
+            DetachPendingView();
             DetachView();
             ShowWindow(bar_, SW_HIDE);
             return false;
         }
-        RECT adjusted = slot_;
+        RECT adjusted = slot.native;
         adjusted.top += height;
-        if (!EqualRect(&current, &adjusted) && !MoveTo(view_, adjusted)) return false;
-        if (!bar_ || !view_) return false;
-        adjusted_ = adjusted;
-        applied_ = true;
+        const UINT flags = useTabs_ ? LayoutFlags | SWP_NOSENDCHANGING : LayoutFlags;
+        const HWND view = view_;
+        if (!EqualRect(&current, &adjusted) && !MoveTo(view, adjusted, nullptr, flags)) return false;
+        if (!bar_ || view_ != view) return false;
+        slot.reserved = adjusted;
+        slot.applied = true;
+        reservedHeight_ = height;
 
-        bounds = {slot_.left, slot_.top, slot_.right, adjusted.top};
+        bounds = {slot.native.left, slot.native.top, slot.native.right, adjusted.top};
         MapWindowPoints(parent, root_, reinterpret_cast<POINT*>(&bounds), 2);
         return true;
     }
@@ -1310,7 +1508,7 @@ private:
     {
         const HWND button = CreateWindowExW(0, L"Button", label, WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
             0, 0, 0, 0, bar_, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(id)), nullptr, nullptr);
-        if (button) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
+        if (button) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(BarFont()), FALSE);
         return button;
     }
 
@@ -1377,6 +1575,7 @@ private:
         RECT bounds{};
         if (!GetWindowRect(bar_, &bounds)) return false;
         bounds.top += buttonsTop_;
+        bounds.left += bookmarkDividerX_ + Scale(1);
         return PtInRect(&bounds, pointer) != FALSE;
     }
 
@@ -1452,7 +1651,7 @@ private:
 
     void PaintButton(const DRAWITEMSTRUCT& button) const
     {
-        const auto palette = BookmarkColors(dark_);
+        const auto palette = BookmarkColors(dark_, useTabs_);
         const Favorite* bookmark = BookmarkForButton(button.hwndItem);
         const bool folder = bookmark && bookmark->IsFolder();
         const bool pressed = (button.itemState & ODS_SELECTED) != 0;
@@ -1461,14 +1660,19 @@ private:
         const auto brush = reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH));
         SetDCBrushColor(button.hDC, palette.surface);
         FillRect(button.hDC, &button.rcItem, brush);
-        if (button.hwndItem == transfer_) {
+        const bool transfer = button.hwndItem == transfer_;
+        const bool settings = button.hwndItem == settings_;
+        if (transfer || settings || button.hwndItem == addBookmark_) {
             RECT bounds = button.rcItem;
-            const auto glyph = palette.highContrast ? palette.text
-                : pressed ? (dark_ ? RGB(130, 174, 255) : RGB(30, 82, 196)) : RGB(46, 107, 240);
-            if (!bookmarkGraphics_ || !DrawExplorerIcon(button.hDC, bounds, Scale(20), ExplorerIcon::LanTransfer, glyph)) {
+            const auto glyph = transfer && !palette.highContrast ? RGB(46, 107, 240) : palette.text;
+            const auto icon = transfer ? ExplorerIcon::LanTransfer : settings ? ExplorerIcon::Settings : ExplorerIcon::Star;
+            if (!bookmarkGraphics_ || !DrawExplorerIcon(button.hDC, bounds, Scale(transfer ? 20 : 18), icon, glyph)) {
+                const auto previousFont = SelectObject(button.hDC, BarFont());
                 SetBkMode(button.hDC, TRANSPARENT);
                 SetTextColor(button.hDC, glyph);
-                DrawTextW(button.hDC, ExplorerText(L"互传"), -1, &bounds, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                const auto label = transfer ? ExplorerText(L"互传") : settings ? L"\x2699" : L"\x2606";
+                DrawTextW(button.hDC, label, -1, &bounds, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                if (previousFont) SelectObject(button.hDC, previousFont);
             }
             if (focus) {
                 InflateRect(&bounds, -Scale(2), -Scale(2));
@@ -1525,15 +1729,10 @@ private:
         }
         SetBkMode(button.hDC, TRANSPARENT);
         SetTextColor(button.hDC, text);
-        const auto font = reinterpret_cast<HFONT>(SendMessageW(button.hwndItem, WM_GETFONT, 0, 0));
-        const auto previous = font ? SelectObject(button.hDC, font) : nullptr;
-        const bool settings = !bookmark && button.hwndItem == settings_;
+        const auto previous = SelectObject(button.hDC, BarFont());
         const UINT alignment = bookmark ? DT_LEFT : DT_CENTER;
         const UINT textFormat = DT_SINGLELINE | DT_VCENTER | alignment | DT_END_ELLIPSIS | DT_NOPREFIX;
-        if (!settings || !bookmarkGraphics_ ||
-            !DrawExplorerIcon(button.hDC, area, Scale(18), ExplorerIcon::Settings, text)) {
-            DrawTextW(button.hDC, settings ? L"\x2699" : label, -1, &area, textFormat);
-        }
+        DrawTextW(button.hDC, label, -1, &area, textFormat);
         if (previous) SelectObject(button.hDC, previous);
         if (focus) {
             RECT bounds = button.rcItem;
@@ -1556,21 +1755,29 @@ private:
         }
     }
 
-    HFONT BookmarkFont()
+    HFONT BarFont() const
     {
-        if (bookmarkFontDpi_ != dpi_) {
-            const HFONT replacement = CreateFontW(-Scale(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-            if (replacement) {
-                for (const HWND button : buttons_) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(replacement), FALSE);
-                if (more_) SendMessageW(more_, WM_SETFONT, reinterpret_cast<WPARAM>(replacement), FALSE);
-                if (!useTabs_ && settings_) SendMessageW(settings_, WM_SETFONT, reinterpret_cast<WPARAM>(replacement), FALSE);
-                if (bookmarkFont_) DeleteObject(bookmarkFont_);
-                bookmarkFont_ = replacement;
-                bookmarkFontDpi_ = dpi_;
-            }
+        return barFont_ ? barFont_ : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    }
+
+    void UpdateBarFont()
+    {
+        if (barFontDpi_ == dpi_) return;
+        const HFONT replacement = CreateFontW(-Scale(12), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+        if (!replacement) return;
+
+        const auto previous = std::exchange(barFont_, replacement);
+        barFontDpi_ = dpi_;
+        const auto parameter = reinterpret_cast<WPARAM>(replacement);
+        tabs_.SetFont(replacement);
+        for (const HWND button : buttons_) SendMessageW(button, WM_SETFONT, parameter, FALSE);
+        for (const HWND button : {more_, transfer_, settings_, tabSettings_, addBookmark_}) {
+            if (button) SendMessageW(button, WM_SETFONT, parameter, FALSE);
         }
-        return bookmarkFont_ ? bookmarkFont_ : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        if (previous) DeleteObject(previous);
+        tabsHeight_ = 0;
+        buttonsDirty_ = true;
     }
 
     void LayoutButtons(int width, int top, int height)
@@ -1582,26 +1789,21 @@ private:
         const int moreWidth = Scale(useTabs_ ? 28 : 62);
         const int moreLeft = width - moreWidth - gap;
         int left = gap;
-        const int transferWidth = Scale(34);
-        if (width >= 2 * gap + transferWidth) {
-            MoveTo(transfer_, {left, top + vertical, left + transferWidth, height - vertical}, nullptr, LayoutFlags | SWP_SHOWWINDOW);
-            InvalidateRect(transfer_, nullptr, FALSE);
-            left += transferWidth + gap;
-        } else {
-            ShowWindow(transfer_, SW_HIDE);
-        }
-        if (!useTabs_) {
-            const int settingsWidth = Scale(34);
-            if (left + settingsWidth + gap <= width) {
-                MoveTo(settings_, {left, top + vertical, left + settingsWidth, height - vertical}, nullptr, LayoutFlags | SWP_SHOWWINDOW);
-                left += settingsWidth + gap;
+        const int toolWidth = Scale(34);
+        for (const HWND tool : {transfer_, settings_, addBookmark_}) {
+            if (left + toolWidth + gap <= width) {
+                MoveTo(tool, {left, top + vertical, left + toolWidth, height - vertical},
+                    nullptr, LayoutFlags | SWP_SHOWWINDOW);
+                InvalidateRect(tool, nullptr, FALSE);
+                left += toolWidth + gap;
             } else {
-                ShowWindow(settings_, SW_HIDE);
+                ShowWindow(tool, SW_HIDE);
             }
         }
-        const HFONT font = BookmarkFont();
+        bookmarkDividerX_ = left > gap && left + gap < width ? left : 0;
+        if (bookmarkDividerX_) left += Scale(8);
         const HDC dc = GetDC(bar_);
-        const HGDIOBJ oldFont = dc ? SelectObject(dc, font) : nullptr;
+        const HGDIOBJ oldFont = dc ? SelectObject(dc, BarFont()) : nullptr;
         const auto releaseDc = [window = bar_, oldFont](HDC drawing) {
             if (oldFont) SelectObject(drawing, oldFont);
             ReleaseDC(window, drawing);
@@ -1628,7 +1830,6 @@ private:
                     DestroyWindow(button);
                     break;
                 }
-                SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
                 buttons_.push_back(button);
             }
             const HWND button = buttons_[visible++];
@@ -1950,22 +2151,31 @@ private:
     bool useTabs_;
     HWND bar_ = nullptr;
     HWND tabHost_ = nullptr;
+    HWND tabSettings_ = nullptr;
     HWND settings_ = nullptr;
-    HWND caption_ = nullptr;
+    HWND addBookmark_ = nullptr;
     HWND view_ = nullptr;
+    HWND pendingView_ = nullptr;
     ComPtr<IShellView> watchedShellView_;
     FolderId watchedFolder_;
     ULONGLONG nextTransferFolderCheck_ = 0;
     HWND more_ = nullptr;
     HWND transfer_ = nullptr;
     HWND tooltip_ = nullptr;
-    RECT slot_{};
-    RECT adjusted_{};
-    bool applied_ = false;
+    ViewSlot viewSlot_{};
+    ViewSlot pendingSlot_{};
+    std::array<NativeBand, 3> topBands_{};
+    LONG nativeRibbonTop_ = 0;
+    LONG nativeBodyBottomGap_ = 0;
+    int topBandsHeight_ = 0;
+    bool movingTopBands_ = false;
+    int reservedHeight_ = 0;
+    bool layoutQueued_ = false;
+    bool refreshing_ = false;
+    bool watchingViewCreation_ = false;
     bool dark_ = false;
     bool buttonsDirty_ = true;
     bool captionHidden_ = false;
-    bool captionActive_ = false;
     bool detaching_ = false;
     DWORD appearance_ = 0;
     static constexpr unsigned QuickAccessMaxAttempts = 6;
@@ -1974,12 +2184,13 @@ private:
     QuickAccessDock quickAccess_;
     int buttonsWidth_ = 0;
     int buttonsTop_ = 0;
+    int bookmarkDividerX_ = 0;
     int tabsWidth_ = 0;
     int tabsHeight_ = 0;
     UINT tabsDpi_ = 0;
     UINT dpi_ = 96;
-    UINT bookmarkFontDpi_ = 0;
-    HFONT bookmarkFont_ = nullptr;
+    UINT barFontDpi_ = 0;
+    HFONT barFont_ = nullptr;
     ULONG_PTR bookmarkGraphics_ = 0;
     HWND hoveredBookmark_ = nullptr;
     FolderTabs tabs_;

@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <ApplicationIcon>../app/LYwintabs.ico</ApplicationIcon>
-    <Version>0.1.0-preview.28</Version>
+    <Version>0.1.0-preview.35</Version>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

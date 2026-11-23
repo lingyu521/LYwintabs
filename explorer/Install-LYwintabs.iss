@@ -1,5 +1,5 @@
 ﻿#define ProductName "LYwintabs"
-#define PackageVersion "0.1.0-preview.28"
+#define PackageVersion "0.1.0-preview.35"
 #define PluginName "LYwintabs.Explorer.dll"
 #define LauncherName "LYwintabs.Launcher.exe"
 #define TransferPath "Transfer\LYwintabs.Transfer.exe"

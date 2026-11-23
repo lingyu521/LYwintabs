@@ -2,6 +2,7 @@
 #include "ExplorerLanguage.h"
 
 #include <commctrl.h>
+#include <gdiplus.h>
 #include <shellapi.h>
 #include <windowsx.h>
 
@@ -15,8 +16,7 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 constexpr int TabTextInset = 7;
-constexpr int TabIconSize = 16;
-constexpr int TabIconGap = 4;
+constexpr int TabGap = 8;
 
 COLORREF Blend(COLORREF base, COLORREF foreground, int percent)
 {
@@ -27,16 +27,13 @@ COLORREF Blend(COLORREF base, COLORREF foreground, int percent)
         mix(GetBValue(base), GetBValue(foreground)));
 }
 
-void DrawFolder(HDC dc, int x, int y, UINT dpi, COLORREF color)
+HFONT CreateBoldGlyphFont(HFONT base, int scalePercent)
 {
-    const auto scale = [dpi](int value) { return MulDiv(value, dpi, 96); };
-    const POINT outline[]{{x + scale(1), y + scale(3)}, {x + scale(6), y + scale(3)},
-        {x + scale(8), y + scale(5)}, {x + scale(15), y + scale(5)}, {x + scale(15), y + scale(13)},
-        {x + scale(1), y + scale(13)}, {x + scale(1), y + scale(3)}};
-    const auto oldPen = SelectObject(dc, GetStockObject(DC_PEN));
-    SetDCPenColor(dc, color);
-    Polyline(dc, outline, ARRAYSIZE(outline));
-    SelectObject(dc, oldPen);
+    LOGFONTW font{};
+    if (GetObjectW(base, sizeof(font), &font) != sizeof(font)) return nullptr;
+    font.lfWeight = FW_BOLD;
+    font.lfHeight = MulDiv(font.lfHeight, scalePercent, 100);
+    return CreateFontIndirectW(&font);
 }
 
 std::wstring FolderLabel(PCIDLIST_ABSOLUTE folder)
@@ -98,6 +95,30 @@ bool FolderTabs::Initialize(HWND container, HWND root, bool dark)
 FolderTabs::~FolderTabs()
 {
     if (tooltip_ && IsWindow(tooltip_)) DestroyWindow(tooltip_);
+    if (addGlyphFont_) DeleteObject(addGlyphFont_);
+    if (closeGlyphFont_) DeleteObject(closeGlyphFont_);
+}
+
+HFONT FolderTabs::Font() const
+{
+    return font_ ? font_ : reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+}
+
+void FolderTabs::SetFont(HFONT font)
+{
+    font_ = font;
+    const auto previousAdd = std::exchange(addGlyphFont_, CreateBoldGlyphFont(Font(), 120));
+    const auto previousClose = std::exchange(closeGlyphFont_, CreateBoldGlyphFont(Font(), 100));
+    if (previousAdd) DeleteObject(previousAdd);
+    if (previousClose) DeleteObject(previousClose);
+    const auto parameter = reinterpret_cast<WPARAM>(Font());
+    for (const HWND command : {add_, more_}) {
+        if (command) SendMessageW(command, WM_SETFONT, parameter, FALSE);
+    }
+    for (const auto& tab : tabs_) {
+        SendMessageW(tab.select, WM_SETFONT, parameter, FALSE);
+        SendMessageW(tab.close, WM_SETFONT, parameter, FALSE);
+    }
 }
 
 HWND FolderTabs::Button(const wchar_t* label)
@@ -109,7 +130,7 @@ HWND FolderTabs::Button(const wchar_t* label)
         DestroyWindow(button);
         return nullptr;
     }
-    SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), FALSE);
+    SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(Font()), FALSE);
     return button;
 }
 
@@ -270,15 +291,14 @@ void FolderTabs::Layout(int width, int height, UINT dpi)
     height_ = height;
     dpi_ = dpi;
     const auto scale = [dpi](int dip) { return MulDiv(dip, dpi, 96); };
-    const int gap = scale(5);
+    const int gap = scale(TabGap);
     const int contentHeight = scale(17);
     const int top = std::clamp(scale(topPaddingDip_), 0, std::max(0, height - contentHeight));
     const int left = std::clamp(scale(leadingWidthDip_), 0, width) + gap;
     const int action = scale(29);
     const int close = scale(24);
-    const int iconSpace = scale(TabIconSize) + scale(TabIconGap);
-    const int labelPadding = close + 2 * scale(TabTextInset) + iconSpace + scale(2);
-    const int minimum = scale(84);
+    const int labelPadding = close + 2 * scale(TabTextInset) + scale(2);
+    const int minimum = scale(68);
     const int maximum = scale(240);
     const int space = std::max(0, width - left - gap - action);
     const auto fitCount = [&](int room) {
@@ -293,7 +313,7 @@ void FolderTabs::Layout(int width, int height, UINT dpi)
     int widthLimit = maximum;
     if (visible) {
         if (const HDC dc = GetDC(parent_)) {
-            const auto oldFont = SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT));
+            const auto oldFont = SelectObject(dc, Font());
             for (size_t offset = 0; offset < visible; ++offset) {
                 const auto& title = tabs_[first + offset].title;
                 SIZE text{};
@@ -339,6 +359,7 @@ void FolderTabs::Layout(int width, int height, UINT dpi)
     EnableWindow(add_, !tabs_.empty());
     if (overflow && x + action <= right) Place(more_, x, top, action, height - top);
     else ShowWindow(more_, SW_HIDE);
+    InvalidateCorners();
 }
 
 LRESULT CALLBACK FolderTabs::TabButtonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
@@ -478,6 +499,13 @@ void FolderTabs::InvalidateTab(HWND label) const
     if (tab == tabs_.end()) return;
     InvalidateRect(tab->select, nullptr, FALSE);
     InvalidateRect(tab->close, nullptr, FALSE);
+    if (active_ < tabs_.size() && tabs_[active_].select == label) InvalidateCorners();
+}
+
+void FolderTabs::InvalidateCorners() const
+{
+    const RECT strip{0, height_ - MulDiv(TabGap, dpi_, 96), width_, height_};
+    InvalidateRect(parent_, &strip, FALSE);
 }
 
 void FolderTabs::SetHoveredControl(HWND control)
@@ -586,11 +614,10 @@ bool FolderTabs::OpenFolderInBackground(const wchar_t* path)
     return true;
 }
 
-void FolderTabs::SetColors(bool dark, std::optional<CaptionColors> caption)
+void FolderTabs::SetColors(bool dark)
 {
-    const bool changed = dark_ != dark || caption_ != caption;
+    const bool changed = dark_ != dark;
     dark_ = dark;
-    caption_ = caption;
     if (changed && parent_) RedrawWindow(parent_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
 }
 
@@ -599,27 +626,15 @@ TabPalette FolderTabs::Colors() const
     HIGHCONTRASTW contrast{sizeof(contrast)};
     if (SystemParametersInfoW(SPI_GETHIGHCONTRAST, contrast.cbSize, &contrast, 0) &&
         (contrast.dwFlags & HCF_HIGHCONTRASTON)) {
-        const auto surface = caption_ ? caption_->surface : GetSysColor(COLOR_WINDOW);
+        const auto surface = GetSysColor(COLOR_WINDOW);
         const auto highlight = GetSysColor(COLOR_HIGHLIGHT);
-        const auto text = caption_ ? caption_->text : GetSysColor(COLOR_WINDOWTEXT);
-        return {surface, surface, highlight, surface, highlight, text, text, GetSysColor(COLOR_HIGHLIGHTTEXT), highlight, true};
+        const auto text = GetSysColor(COLOR_WINDOWTEXT);
+        return {surface, surface, highlight, surface, highlight, text, GetSysColor(COLOR_HIGHLIGHTTEXT), highlight, true};
     }
-    const TabPalette themed = dark_ ?
-        TabPalette{RGB(32, 32, 32), RGB(32, 32, 32), RGB(58, 58, 58), RGB(49, 49, 49), RGB(68, 68, 68),
-            RGB(201, 201, 201), RGB(198, 198, 198), RGB(240, 240, 240), RGB(80, 80, 80)} :
-        TabPalette{RGB(246, 246, 246), RGB(231, 231, 231), RGB(255, 255, 255), RGB(221, 221, 221), RGB(210, 210, 210),
-            RGB(66, 66, 66), RGB(80, 80, 80), RGB(32, 32, 32), RGB(200, 200, 200)};
-    if (caption_) {
-        const auto [surface, text] = *caption_;
-        if (dark_) {
-            const auto passiveText = Blend(text, surface, 18);
-            return {surface, surface, themed.selected, Blend(surface, text, 16), Blend(surface, text, 24),
-                passiveText, passiveText, themed.selectedText, themed.selectedBorder};
-        }
-        return {surface, Blend(surface, text, 11), themed.selected, Blend(surface, text, 16), Blend(surface, text, 22),
-            text, text, themed.selectedText, themed.selectedBorder};
-    }
-    return themed;
+    if (dark_) return {RGB(28, 31, 37), RGB(28, 31, 37), RGB(44, 47, 53), RGB(53, 58, 66), RGB(65, 71, 81),
+        RGB(193, 202, 215), RGB(241, 245, 252), RGB(44, 47, 53)};
+    return {RGB(230, 235, 242), RGB(230, 235, 242), RGB(252, 253, 255), RGB(216, 226, 240), RGB(205, 219, 238),
+        RGB(51, 62, 80), RGB(26, 37, 54), RGB(252, 253, 255)};
 }
 
 bool FolderTabs::Draw(const DRAWITEMSTRUCT& item) const
@@ -679,15 +694,10 @@ bool FolderTabs::Draw(const DRAWITEMSTRUCT& item) const
     const wchar_t* text = textTab ? tab->title.c_str() : commandText;
     RECT label = item.rcItem;
     if (textTab) InflateRect(&label, -MulDiv(TabTextInset, dpi_, 96), 0);
-    if (textTab) {
-        const int size = MulDiv(TabIconSize, dpi_, 96);
-        const auto icon = selectedFill || palette.highContrast ? color : palette.icon;
-        DrawFolder(item.hDC, label.left, (label.top + label.bottom - size) / 2, dpi_, icon);
-        label.left += size + MulDiv(TabIconGap, dpi_, 96);
-    }
     SetBkMode(item.hDC, TRANSPARENT);
     SetTextColor(item.hDC, disabled ? GetSysColor(COLOR_GRAYTEXT) : color);
-    const auto oldFont = SelectObject(item.hDC, GetStockObject(DEFAULT_GUI_FONT));
+    const HFONT glyphFont = button == add_ ? addGlyphFont_ : (hasTab && !textTab ? closeGlyphFont_ : nullptr);
+    const auto oldFont = SelectObject(item.hDC, glyphFont ? glyphFont : Font());
     const UINT alignment = textTab ? DT_LEFT : DT_CENTER;
     if (!hasTab || textTab || selected || hovered || focused || pressed || touch_ || palette.highContrast) {
         DrawTextW(item.hDC, text, -1, &label, alignment | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -706,4 +716,41 @@ bool FolderTabs::Draw(const DRAWITEMSTRUCT& item) const
     }
     if (state) RestoreDC(item.hDC, state);
     return true;
+}
+
+void FolderTabs::DrawActiveTabCorners(HDC dc) const
+{
+    if (active_ >= tabs_.size()) return;
+    const auto& tab = tabs_[active_];
+    RECT label{};
+    RECT close{};
+    if (!IsWindowVisible(tab.select) || !IsWindowVisible(tab.close) ||
+        !GetWindowRect(tab.select, &label) || !GetWindowRect(tab.close, &close)) return;
+    MapWindowPoints(nullptr, parent_, reinterpret_cast<POINT*>(&label), 2);
+    MapWindowPoints(nullptr, parent_, reinterpret_cast<POINT*>(&close), 2);
+
+    using namespace Gdiplus;
+    const auto radius = static_cast<REAL>(MulDiv(TabGap, dpi_, 96));
+    const auto bottom = static_cast<REAL>(label.bottom);
+    const auto top = bottom - radius;
+    GraphicsPath corners;
+    const auto addCorner = [&](REAL edge, REAL outer) {
+        // The strip draws the outward curve in the gap beside each clipped button.
+        corners.StartFigure();
+        corners.AddBezier(edge, top, edge, top + radius * 0.55f, outer + (edge - outer) * 0.55f, bottom, outer, bottom);
+        corners.AddLine(outer, bottom, edge, bottom);
+        corners.AddLine(edge, bottom, edge, top);
+        corners.CloseFigure();
+    };
+    const auto left = static_cast<REAL>(label.left);
+    const auto right = static_cast<REAL>(close.right);
+    addCorner(left, left - radius);
+    addCorner(right, right + radius);
+
+    const auto palette = Colors();
+    const COLORREF fill = drag_ && drag_->started && drag_->label == tab.select ? palette.pressed : palette.selected;
+    Graphics graphics(dc);
+    graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+    SolidBrush brush(Color(GetRValue(fill), GetGValue(fill), GetBValue(fill)));
+    graphics.FillPath(&brush, &corners);
 }
